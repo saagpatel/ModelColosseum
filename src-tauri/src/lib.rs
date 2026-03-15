@@ -1,8 +1,12 @@
 mod db;
+mod debate;
 mod elo;
 mod ollama;
+mod prompts;
 
 use serde::Serialize;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Serialize, Clone)]
 pub struct Model {
@@ -163,10 +167,13 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .manage(debate::ActiveDebates(Arc::new(Mutex::new(HashMap::new()))))
         .invoke_handler(tauri::generate_handler![
             health_check,
             list_models,
             refresh_models,
+            debate::start_debate,
+            debate::abort_debate,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

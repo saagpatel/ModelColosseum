@@ -39,12 +39,13 @@ Key modules:
 - No unwrap() in production Rust code — use ? operator or proper error handling
 
 ## Current Phase
-**Phase 0: Foundation** (target: Week 1)
+**Phase 1: Arena Mode** — Phase 0 complete, all foundation verified.
 - [x] Scaffold Tauri 2.0 with React 19 + TS + Vite + Tailwind
 - [x] Set up SQLite with rusqlite (WAL mode, all tables)
 - [x] Build Ollama REST client (list, show, health, generate_stream)
 - [x] Wire model list to frontend with ModelSelector component
 - [x] Implement Elo calculation module with unit tests
+- [x] Streaming pipeline validated (Ollama NDJSON → Rust mpsc → Tauri events → React)
 
 ## Key Decisions Made
 | Decision | Choice | Rationale |

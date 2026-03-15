@@ -40,11 +40,11 @@ Key modules:
 
 ## Current Phase
 **Phase 0: Foundation** (target: Week 1)
-- [ ] Scaffold Tauri 2.0 with React 19 + TS + Vite + Tailwind
-- [ ] Set up SQLite with rusqlite (WAL mode, all tables)
-- [ ] Build Ollama REST client (list, show, health, generate_stream)
-- [ ] Wire model list to frontend with ModelSelector component
-- [ ] Implement Elo calculation module with unit tests
+- [x] Scaffold Tauri 2.0 with React 19 + TS + Vite + Tailwind
+- [x] Set up SQLite with rusqlite (WAL mode, all tables)
+- [x] Build Ollama REST client (list, show, health, generate_stream)
+- [x] Wire model list to frontend with ModelSelector component
+- [x] Implement Elo calculation module with unit tests
 
 ## Key Decisions Made
 | Decision | Choice | Rationale |

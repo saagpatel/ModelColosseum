@@ -530,6 +530,165 @@ pub async fn abort_debate(
 }
 
 // ---------------------------------------------------------------------------
+// Vote command
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, Clone)]
+pub struct VoteResult {
+    pub debate_id: i64,
+    pub rating_a_before: f64,
+    pub rating_a_after: f64,
+    pub rating_b_before: f64,
+    pub rating_b_after: f64,
+}
+
+#[tauri::command]
+pub async fn vote_debate(debate_id: i64, winner: String) -> Result<VoteResult, String> {
+    let valid = ["model_a", "model_b", "draw"];
+    if !valid.contains(&winner.as_str()) {
+        return Err(format!(
+            "Invalid winner '{}': must be 'model_a', 'model_b', or 'draw'",
+            winner
+        ));
+    }
+
+    let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+
+    // Read debate
+    let (model_a_id, model_b_id, status): (i64, i64, String) = conn
+        .query_row(
+            "SELECT model_a_id, model_b_id, status FROM debates WHERE id = ?1",
+            rusqlite::params![debate_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|e| format!("debate not found (id={debate_id}): {e}"))?;
+
+    if status != "voting" {
+        return Err(format!(
+            "Debate is not in voting state (current status: '{status}')"
+        ));
+    }
+
+    // Read model A
+    let (rating_a, total_a): (f64, i64) = conn
+        .query_row(
+            "SELECT elo_rating, total_debates FROM models WHERE id = ?1",
+            rusqlite::params![model_a_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| format!("model_a not found (id={model_a_id}): {e}"))?;
+
+    // Read model B
+    let (rating_b, total_b): (f64, i64) = conn
+        .query_row(
+            "SELECT elo_rating, total_debates FROM models WHERE id = ?1",
+            rusqlite::params![model_b_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| format!("model_b not found (id={model_b_id}): {e}"))?;
+
+    // Map winner to Outcome from model_a perspective
+    let outcome = match winner.as_str() {
+        "model_a" => crate::elo::Outcome::Win,
+        "model_b" => crate::elo::Outcome::Loss,
+        _ => crate::elo::Outcome::Draw,
+    };
+
+    let (new_a, new_b, k_a, k_b) = crate::elo::update_ratings(
+        rating_a,
+        rating_b,
+        outcome,
+        total_a as u32,
+        total_b as u32,
+    );
+
+    // Win/loss/draw increments for each model
+    let (a_wins, a_losses, a_draws, b_wins, b_losses, b_draws) = match winner.as_str() {
+        "model_a" => (1i64, 0i64, 0i64, 0i64, 1i64, 0i64),
+        "model_b" => (0i64, 1i64, 0i64, 1i64, 0i64, 0i64),
+        _ => (0i64, 0i64, 1i64, 0i64, 0i64, 1i64),
+    };
+
+    // Transaction: update all records
+    conn.execute_batch("BEGIN")
+        .map_err(|e| format!("begin transaction: {e}"))?;
+
+    let result = (|| -> Result<(), String> {
+        // Update debate status and winner
+        conn.execute(
+            "UPDATE debates SET winner = ?1, status = 'completed' WHERE id = ?2",
+            rusqlite::params![winner, debate_id],
+        )
+        .map_err(|e| format!("update debate: {e}"))?;
+
+        // Insert elo_history for model_a
+        conn.execute(
+            "INSERT INTO elo_history (model_id, debate_id, rating_before, rating_after, k_factor)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![model_a_id, debate_id, rating_a, new_a, k_a],
+        )
+        .map_err(|e| format!("insert elo_history model_a: {e}"))?;
+
+        // Insert elo_history for model_b
+        conn.execute(
+            "INSERT INTO elo_history (model_id, debate_id, rating_before, rating_after, k_factor)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![model_b_id, debate_id, rating_b, new_b, k_b],
+        )
+        .map_err(|e| format!("insert elo_history model_b: {e}"))?;
+
+        // Update model_a stats
+        conn.execute(
+            "UPDATE models SET
+                elo_rating = ?1,
+                arena_wins = arena_wins + ?2,
+                arena_losses = arena_losses + ?3,
+                arena_draws = arena_draws + ?4,
+                total_debates = total_debates + 1,
+                last_used_at = datetime('now')
+             WHERE id = ?5",
+            rusqlite::params![new_a, a_wins, a_losses, a_draws, model_a_id],
+        )
+        .map_err(|e| format!("update model_a: {e}"))?;
+
+        // Update model_b stats
+        conn.execute(
+            "UPDATE models SET
+                elo_rating = ?1,
+                arena_wins = arena_wins + ?2,
+                arena_losses = arena_losses + ?3,
+                arena_draws = arena_draws + ?4,
+                total_debates = total_debates + 1,
+                last_used_at = datetime('now')
+             WHERE id = ?5",
+            rusqlite::params![new_b, b_wins, b_losses, b_draws, model_b_id],
+        )
+        .map_err(|e| format!("update model_b: {e}"))?;
+
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => {
+            conn.execute_batch("COMMIT")
+                .map_err(|e| format!("commit transaction: {e}"))?;
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(e);
+        }
+    }
+
+    Ok(VoteResult {
+        debate_id,
+        rating_a_before: rating_a,
+        rating_a_after: new_a,
+        rating_b_before: rating_b,
+        rating_b_after: new_b,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -556,5 +715,14 @@ mod tests {
     fn round_to_phase_two_rounds() {
         assert_eq!(round_to_phase(1, 2), "opening");
         assert_eq!(round_to_phase(2, 2), "closing");
+    }
+
+    #[test]
+    fn vote_debate_validates_winner() {
+        let valid = ["model_a", "model_b", "draw"];
+        assert!(valid.contains(&"model_a"));
+        assert!(valid.contains(&"model_b"));
+        assert!(valid.contains(&"draw"));
+        assert!(!valid.contains(&"invalid"));
     }
 }

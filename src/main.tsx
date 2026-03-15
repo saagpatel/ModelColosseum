@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import { createBrowserRouter, RouterProvider } from "react-router";
 import { AppShell } from "./components/AppShell";
 import { Arena } from "./pages/Arena";
+import { Leaderboard } from "./pages/Leaderboard";
+import { History } from "./pages/History";
 import "./index.css";
 
 const router = createBrowserRouter([
@@ -13,6 +15,14 @@ const router = createBrowserRouter([
       {
         index: true,
         element: <Arena />,
+      },
+      {
+        path: "leaderboard",
+        element: <Leaderboard />,
+      },
+      {
+        path: "history",
+        element: <History />,
       },
     ],
   },

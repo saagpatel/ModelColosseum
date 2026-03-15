@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-type DebatePhase = "idle" | "debating" | "complete" | "error" | "aborted";
+type DebatePhase = "idle" | "debating" | "complete" | "voting" | "voted" | "error" | "aborted";
 
 interface DebateState {
   phase: DebatePhase;
@@ -12,6 +12,8 @@ interface DebateState {
   currentRound: number;
   mode: "concurrent" | "sequential" | null;
   errorMessage: string | null;
+  eloDeltaA: number | null;
+  eloDeltaB: number | null;
 
   startDebate: (
     debateId: number,
@@ -25,6 +27,7 @@ interface DebateState {
   complete: () => void;
   abort: () => void;
   setError: (message: string) => void;
+  setVoteResult: (ratingABefore: number, ratingAAfter: number, ratingBBefore: number, ratingBAfter: number) => void;
   reset: () => void;
 }
 
@@ -38,6 +41,8 @@ const initialState = {
   currentRound: 1,
   mode: null,
   errorMessage: null,
+  eloDeltaA: null,
+  eloDeltaB: null,
 };
 
 export const useDebateStore = create<DebateState>((set) => ({
@@ -54,6 +59,8 @@ export const useDebateStore = create<DebateState>((set) => ({
       currentRound: 1,
       mode: null,
       errorMessage: null,
+      eloDeltaA: null,
+      eloDeltaB: null,
     }),
 
   setMode: (mode) => set({ mode }),
@@ -65,6 +72,13 @@ export const useDebateStore = create<DebateState>((set) => ({
   abort: () => set({ phase: "aborted" }),
 
   setError: (message) => set({ phase: "error", errorMessage: message }),
+
+  setVoteResult: (ratingABefore, ratingAAfter, ratingBBefore, ratingBAfter) =>
+    set({
+      phase: "voted",
+      eloDeltaA: Math.round(ratingAAfter - ratingABefore),
+      eloDeltaB: Math.round(ratingBAfter - ratingBBefore),
+    }),
 
   reset: () => set(initialState),
 }));

@@ -10,6 +10,7 @@ export interface Model {
   arena_losses: number;
   arena_draws: number;
   total_debates: number;
+  last_used_at: string | null;
 }
 
 export interface StreamTokenPayload {
@@ -42,4 +43,35 @@ export interface DebateAbortedPayload {
 export interface DebateModePayload {
   debate_id: number;
   mode: "concurrent" | "sequential";
+}
+
+export interface VoteResult {
+  debate_id: number;
+  rating_a_before: number;
+  rating_a_after: number;
+  rating_b_before: number;
+  rating_b_after: number;
+}
+
+export interface EloHistoryPoint {
+  rating: number;
+  created_at: string;
+}
+
+export interface DebateSummary {
+  id: number;
+  topic: string;
+  model_a_name: string;
+  model_b_name: string;
+  winner: string | null;
+  status: string;
+  total_rounds: number;
+  created_at: string;
+}
+
+export interface RoundTranscript {
+  round_number: number;
+  speaker: string;
+  phase: string;
+  content: string;
 }

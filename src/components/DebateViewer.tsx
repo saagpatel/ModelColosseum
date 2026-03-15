@@ -1,16 +1,29 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { DebatePanel } from "./DebatePanel";
 import { useDebateEvents } from "../hooks/useDebateEvents";
 import { useDebateStore } from "../stores/debateStore";
 import { useAppStore } from "../stores/appStore";
+import type { VoteResult } from "../types";
 
 export function DebateViewer() {
   const panelARef = useRef<HTMLDivElement>(null);
   const panelBRef = useRef<HTMLDivElement>(null);
+  const [isVoting, setIsVoting] = useState(false);
 
-  const { phase, debateId, currentRound, totalRounds, mode, modelAId, modelBId, errorMessage } =
-    useDebateStore();
+  const {
+    phase,
+    debateId,
+    currentRound,
+    totalRounds,
+    mode,
+    modelAId,
+    modelBId,
+    errorMessage,
+    eloDeltaA,
+    eloDeltaB,
+    setVoteResult,
+  } = useDebateStore();
   const models = useAppStore((s) => s.models);
 
   useDebateEvents(debateId, panelARef, panelBRef);
@@ -19,13 +32,25 @@ export function DebateViewer() {
   const modelB = models.find((m) => m.id === modelBId);
 
   const isDebating = phase === "debating";
-  const isComplete = phase === "complete";
   const isError = phase === "error";
   const isAborted = phase === "aborted";
 
   const handleAbort = () => {
     if (debateId !== null) {
       void invoke("abort_debate", { debateId });
+    }
+  };
+
+  const handleVote = async (winner: string) => {
+    if (debateId === null) return;
+    setIsVoting(true);
+    try {
+      const result = await invoke<VoteResult>("vote_debate", { debateId, winner });
+      setVoteResult(result.rating_a_before, result.rating_a_after, result.rating_b_before, result.rating_b_after);
+    } catch (err) {
+      console.error("Vote failed:", err);
+    } finally {
+      setIsVoting(false);
     }
   };
 
@@ -41,7 +66,8 @@ export function DebateViewer() {
           contentRef={panelARef}
           isStreaming={isDebating}
           isWaiting={false}
-          isComplete={isComplete || isError || isAborted}
+          isComplete={phase === "complete" || phase === "voted" || isError || isAborted}
+          eloDelta={eloDeltaA ?? undefined}
         />
 
         {/* Center Column */}
@@ -72,9 +98,36 @@ export function DebateViewer() {
             </button>
           )}
 
-          {isComplete && (
+          {phase === "complete" && (
+            <div className="flex flex-col items-center gap-2">
+              <span className="text-xs font-medium text-gold-400">Cast Your Vote</span>
+              <button
+                onClick={() => void handleVote("model_a")}
+                className="w-full rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-400 transition-colors hover:bg-emerald-500/20 disabled:opacity-50"
+                disabled={isVoting}
+              >
+                Left Wins
+              </button>
+              <button
+                onClick={() => void handleVote("draw")}
+                className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-700 disabled:opacity-50"
+                disabled={isVoting}
+              >
+                Draw
+              </button>
+              <button
+                onClick={() => void handleVote("model_b")}
+                className="w-full rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/20 disabled:opacity-50"
+                disabled={isVoting}
+              >
+                Right Wins
+              </button>
+            </div>
+          )}
+
+          {phase === "voted" && (
             <span className="rounded bg-gold-500/10 px-2 py-1 text-xs font-medium text-gold-400">
-              Awaiting Vote
+              Elo Updated
             </span>
           )}
 
@@ -97,7 +150,8 @@ export function DebateViewer() {
           contentRef={panelBRef}
           isStreaming={isDebating}
           isWaiting={false}
-          isComplete={isComplete || isError || isAborted}
+          isComplete={phase === "complete" || phase === "voted" || isError || isAborted}
+          eloDelta={eloDeltaB ?? undefined}
         />
       </div>
     </div>

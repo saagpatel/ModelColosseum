@@ -10,6 +10,7 @@ interface DebatePanelProps {
   isStreaming: boolean;
   isWaiting: boolean;
   isComplete: boolean;
+  eloDelta?: number;
 }
 
 export function DebatePanel({
@@ -20,6 +21,7 @@ export function DebatePanel({
   isStreaming,
   isWaiting,
   isComplete,
+  eloDelta,
 }: DebatePanelProps) {
   const isPro = side === "a";
   const label = isPro ? "PRO" : "CON";
@@ -37,9 +39,22 @@ export function DebatePanel({
           </span>
           <span className="truncate font-semibold text-slate-200">{modelName}</span>
         </div>
-        <span className="rounded bg-slate-800 px-2.5 py-1 font-mono text-xs text-gold-500">
-          {eloRating.toFixed(0)}
-        </span>
+        <div className="flex items-center gap-2">
+          {eloDelta !== undefined && (
+            <span className={`text-xs font-medium ${
+              eloDelta > 0
+                ? "text-emerald-400"
+                : eloDelta < 0
+                  ? "text-red-400"
+                  : "text-slate-500"
+            }`}>
+              {eloDelta > 0 ? '+' : ''}{eloDelta}
+            </span>
+          )}
+          <span className="rounded bg-slate-800 px-2.5 py-1 font-mono text-xs text-gold-500">
+            {eloRating.toFixed(0)}
+          </span>
+        </div>
       </div>
 
       {/* Content */}

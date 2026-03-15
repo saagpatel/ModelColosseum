@@ -7,8 +7,8 @@ const tabs = [
   { name: "Arena", to: "/", enabled: true },
   { name: "Benchmark", to: "/benchmark", enabled: false },
   { name: "Sparring", to: "/sparring", enabled: false },
-  { name: "Leaderboard", to: "/leaderboard", enabled: false },
-  { name: "History", to: "/history", enabled: false },
+  { name: "Leaderboard", to: "/leaderboard", enabled: true },
+  { name: "History", to: "/history", enabled: true },
   { name: "Settings", to: "/settings", enabled: false },
 ] as const;
 

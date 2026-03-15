@@ -21,6 +21,33 @@ pub struct Model {
     pub arena_losses: i64,
     pub arena_draws: i64,
     pub total_debates: i64,
+    pub last_used_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct EloHistoryPoint {
+    pub rating: f64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct DebateSummary {
+    pub id: i64,
+    pub topic: String,
+    pub model_a_name: String,
+    pub model_b_name: String,
+    pub winner: Option<String>,
+    pub status: String,
+    pub total_rounds: i32,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct RoundTranscript {
+    pub round_number: i32,
+    pub speaker: String,
+    pub phase: String,
+    pub content: String,
 }
 
 fn make_display_name(name: &str) -> String {
@@ -82,7 +109,8 @@ async fn list_models() -> Result<Vec<Model>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, name, display_name, parameter_count, quantization, family,
-                    elo_rating, arena_wins, arena_losses, arena_draws, total_debates
+                    elo_rating, arena_wins, arena_losses, arena_draws, total_debates,
+                    last_used_at
              FROM models ORDER BY elo_rating DESC",
         )
         .map_err(|e| format!("query error: {e}"))?;
@@ -101,6 +129,7 @@ async fn list_models() -> Result<Vec<Model>, String> {
                 arena_losses: row.get(8)?,
                 arena_draws: row.get(9)?,
                 total_debates: row.get(10)?,
+                last_used_at: row.get(11)?,
             })
         })
         .map_err(|e| format!("query error: {e}"))?
@@ -108,6 +137,131 @@ async fn list_models() -> Result<Vec<Model>, String> {
         .map_err(|e| format!("row error: {e}"))?;
 
     Ok(models)
+}
+
+#[tauri::command]
+async fn get_leaderboard() -> Result<Vec<Model>, String> {
+    list_models().await
+}
+
+#[tauri::command]
+async fn get_model_elo_history(model_id: i64, limit: Option<i64>) -> Result<Vec<EloHistoryPoint>, String> {
+    let effective_limit = limit.unwrap_or(20);
+    let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT rating_after, created_at FROM elo_history
+             WHERE model_id = ?1 ORDER BY created_at ASC LIMIT ?2",
+        )
+        .map_err(|e| format!("query error: {e}"))?;
+
+    let points = stmt
+        .query_map(rusqlite::params![model_id, effective_limit], |row| {
+            Ok(EloHistoryPoint {
+                rating: row.get(0)?,
+                created_at: row.get(1)?,
+            })
+        })
+        .map_err(|e| format!("query error: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("row error: {e}"))?;
+
+    Ok(points)
+}
+
+#[tauri::command]
+async fn get_debates(
+    cursor: Option<i64>,
+    limit: Option<i64>,
+    search: Option<String>,
+    model_id: Option<i64>,
+) -> Result<Vec<DebateSummary>, String> {
+    let effective_limit = limit.unwrap_or(20);
+    let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+
+    // Build dynamic query
+    let mut conditions = vec!["d.status IN ('completed', 'voting', 'abandoned')".to_string()];
+    let mut param_values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+    if let Some(c) = cursor {
+        conditions.push(format!("d.id < ?{}", param_values.len() + 1));
+        param_values.push(Box::new(c));
+    }
+    if let Some(ref s) = search {
+        conditions.push(format!("d.topic LIKE ?{}", param_values.len() + 1));
+        param_values.push(Box::new(format!("%{s}%")));
+    }
+    if let Some(mid) = model_id {
+        conditions.push(format!(
+            "(d.model_a_id = ?{0} OR d.model_b_id = ?{0})",
+            param_values.len() + 1
+        ));
+        param_values.push(Box::new(mid));
+    }
+
+    let where_clause = conditions.join(" AND ");
+    let limit_param_idx = param_values.len() + 1;
+    param_values.push(Box::new(effective_limit));
+
+    let sql = format!(
+        "SELECT d.id, d.topic, ma.display_name, mb.display_name, d.winner, d.status,
+                d.total_rounds, d.created_at
+         FROM debates d
+         JOIN models ma ON d.model_a_id = ma.id
+         JOIN models mb ON d.model_b_id = mb.id
+         WHERE {where_clause}
+         ORDER BY d.id DESC
+         LIMIT ?{limit_param_idx}"
+    );
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| format!("query error: {e}"))?;
+
+    let params_refs: Vec<&dyn rusqlite::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+
+    let debates = stmt
+        .query_map(params_refs.as_slice(), |row| {
+            Ok(DebateSummary {
+                id: row.get(0)?,
+                topic: row.get(1)?,
+                model_a_name: row.get(2)?,
+                model_b_name: row.get(3)?,
+                winner: row.get(4)?,
+                status: row.get(5)?,
+                total_rounds: row.get(6)?,
+                created_at: row.get(7)?,
+            })
+        })
+        .map_err(|e| format!("query error: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("row error: {e}"))?;
+
+    Ok(debates)
+}
+
+#[tauri::command]
+async fn get_debate_transcript(debate_id: i64) -> Result<Vec<RoundTranscript>, String> {
+    let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT round_number, speaker, phase, content FROM rounds
+             WHERE debate_id = ?1 ORDER BY round_number, id",
+        )
+        .map_err(|e| format!("query error: {e}"))?;
+
+    let rounds = stmt
+        .query_map(rusqlite::params![debate_id], |row| {
+            Ok(RoundTranscript {
+                round_number: row.get(0)?,
+                speaker: row.get(1)?,
+                phase: row.get(2)?,
+                content: row.get(3)?,
+            })
+        })
+        .map_err(|e| format!("query error: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("row error: {e}"))?;
+
+    Ok(rounds)
 }
 
 #[tauri::command]
@@ -172,8 +326,13 @@ pub fn run() {
             health_check,
             list_models,
             refresh_models,
+            get_leaderboard,
+            get_model_elo_history,
+            get_debates,
+            get_debate_transcript,
             debate::start_debate,
             debate::abort_debate,
+            debate::vote_debate,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

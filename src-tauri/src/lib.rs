@@ -1,3 +1,4 @@
+mod benchmark;
 mod db;
 mod debate;
 mod elo;
@@ -322,6 +323,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(debate::ActiveDebates(Arc::new(Mutex::new(HashMap::new()))))
+        .manage(benchmark::ActiveBenchmarks(Arc::new(Mutex::new(HashMap::new()))))
         .invoke_handler(tauri::generate_handler![
             health_check,
             list_models,
@@ -333,6 +335,17 @@ pub fn run() {
             debate::start_debate,
             debate::abort_debate,
             debate::vote_debate,
+            benchmark::list_test_suites,
+            benchmark::create_test_suite,
+            benchmark::update_test_suite,
+            benchmark::delete_test_suite,
+            benchmark::list_prompts,
+            benchmark::create_prompt,
+            benchmark::update_prompt,
+            benchmark::delete_prompt,
+            benchmark::reorder_prompts,
+            benchmark::start_benchmark,
+            benchmark::cancel_benchmark,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

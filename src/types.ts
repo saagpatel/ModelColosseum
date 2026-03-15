@@ -75,3 +75,47 @@ export interface RoundTranscript {
   phase: string;
   content: string;
 }
+
+export interface TestSuite {
+  id: number;
+  name: string;
+  description: string | null;
+  is_default: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Prompt {
+  id: number;
+  suite_id: number;
+  category: string;
+  title: string;
+  text: string;
+  system_prompt: string | null;
+  ideal_answer: string | null;
+  eval_criteria: string | null;
+  sort_order: number;
+  created_at: string;
+}
+
+export interface BenchmarkProgress {
+  run_id: number;
+  completed: number;
+  total: number;
+  current_model: string;
+  current_prompt: string;
+}
+
+export interface BenchmarkStreamPayload {
+  run_id: number;
+  token: string;
+}
+
+export interface BenchmarkCompletePayload {
+  run_id: number;
+}
+
+export interface BenchmarkErrorPayload {
+  run_id: number;
+  message: string;
+}

@@ -5,7 +5,7 @@ import { useDebateStore } from "../stores/debateStore";
 
 const tabs = [
   { name: "Arena", to: "/", enabled: true },
-  { name: "Benchmark", to: "/benchmark", enabled: false },
+  { name: "Benchmark", to: "/benchmark", enabled: true },
   { name: "Sparring", to: "/sparring", enabled: false },
   { name: "Leaderboard", to: "/leaderboard", enabled: true },
   { name: "History", to: "/history", enabled: true },

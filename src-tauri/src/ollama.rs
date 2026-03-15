@@ -1,9 +1,15 @@
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use tokio::sync::mpsc;
 
 const OLLAMA_BASE: &str = "http://localhost:11434";
+
+fn client() -> &'static Client {
+    static HTTP: OnceLock<Client> = OnceLock::new();
+    HTTP.get_or_init(Client::new)
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OllamaModel {
@@ -50,8 +56,7 @@ pub struct StreamChunk {
 }
 
 pub async fn health_check() -> Result<bool, String> {
-    let client = Client::new();
-    match client
+    match client()
         .get(OLLAMA_BASE)
         .timeout(std::time::Duration::from_secs(3))
         .send()
@@ -63,8 +68,7 @@ pub async fn health_check() -> Result<bool, String> {
 }
 
 pub async fn list_models() -> Result<Vec<OllamaModel>, String> {
-    let client = Client::new();
-    let resp = client
+    let resp = client()
         .get(format!("{OLLAMA_BASE}/api/tags"))
         .timeout(std::time::Duration::from_secs(10))
         .send()
@@ -80,8 +84,7 @@ pub async fn list_models() -> Result<Vec<OllamaModel>, String> {
 }
 
 pub async fn show_model(name: &str) -> Result<ShowResponse, String> {
-    let client = Client::new();
-    let resp = client
+    let resp = client()
         .post(format!("{OLLAMA_BASE}/api/show"))
         .json(&serde_json::json!({ "name": name }))
         .timeout(std::time::Duration::from_secs(10))
@@ -135,8 +138,7 @@ pub async fn generate_stream(
         body["options"] = serde_json::Value::Object(options);
     }
 
-    let client = Client::new();
-    let resp = client
+    let resp = client()
         .post(format!("{OLLAMA_BASE}/api/generate"))
         .json(&body)
         .send()

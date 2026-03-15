@@ -1,12 +1,4 @@
-interface Model {
-  id: number;
-  name: string;
-  display_name: string;
-  parameter_count: number | null;
-  quantization: string | null;
-  family: string | null;
-  elo_rating: number;
-}
+import type { Model } from "../types";
 
 interface ModelSelectorProps {
   models: Model[];
@@ -51,7 +43,7 @@ export function ModelSelector({
               </div>
             </div>
             <div className="flex items-center gap-4 text-xs">
-              {model.parameter_count && (
+              {model.parameter_count !== null && (
                 <span className="rounded bg-slate-700 px-2 py-0.5 text-slate-400">
                   {model.parameter_count}B
                 </span>

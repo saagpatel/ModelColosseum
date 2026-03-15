@@ -1,20 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ModelSelector } from "./components/ModelSelector";
-
-interface Model {
-  id: number;
-  name: string;
-  display_name: string;
-  parameter_count: number | null;
-  quantization: string | null;
-  family: string | null;
-  elo_rating: number;
-  arena_wins: number;
-  arena_losses: number;
-  arena_draws: number;
-  total_debates: number;
-}
+import type { Model } from "./types";
 
 function App() {
   const [models, setModels] = useState<Model[]>([]);
@@ -148,7 +135,7 @@ function App() {
                           {m.arena_wins}W / {m.arena_losses}L / {m.arena_draws}D
                         </p>
                       </div>
-                      {m.parameter_count && (
+                      {m.parameter_count !== null && (
                         <div>
                           <span className="text-slate-500">Parameters</span>
                           <p className="font-medium text-slate-200">

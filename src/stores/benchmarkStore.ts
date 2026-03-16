@@ -1,7 +1,7 @@
 import { create } from "zustand";
-import type { TestSuite, Prompt, BenchmarkProgress } from "../types";
+import type { TestSuite, Prompt, BenchmarkProgress, BenchmarkResult } from "../types";
 
-type BenchmarkPhase = "editing" | "configuring" | "running" | "complete" | "error";
+type BenchmarkPhase = "editing" | "configuring" | "running" | "complete" | "results" | "error";
 
 interface BenchmarkState {
   phase: BenchmarkPhase;
@@ -19,6 +19,14 @@ interface BenchmarkState {
   startedAt: number | null;
   errorMessage: string | null;
 
+  // Results phase state
+  results: BenchmarkResult[];
+  viewingRunId: number | null;
+  blindMode: boolean;
+  scoreAllMode: boolean;
+  scoreAllPromptIndex: number;
+  autoJudgeProgress: { completed: number; total: number; currentModel: string } | null;
+
   setSuites: (suites: TestSuite[]) => void;
   selectSuite: (id: number | null) => void;
   setPrompts: (prompts: Prompt[]) => void;
@@ -29,6 +37,17 @@ interface BenchmarkState {
   complete: () => void;
   setError: (message: string) => void;
   reset: () => void;
+
+  // Results actions
+  setResults: (results: BenchmarkResult[]) => void;
+  viewRun: (runId: number, results: BenchmarkResult[]) => void;
+  toggleBlindMode: () => void;
+  enterScoreAllMode: () => void;
+  exitScoreAllMode: () => void;
+  nextPrompt: () => void;
+  prevPrompt: () => void;
+  setAutoJudgeProgress: (progress: { completed: number; total: number; currentModel: string } | null) => void;
+  updateResultScore: (resultId: number, score: number) => void;
 }
 
 const initialState = {
@@ -41,6 +60,12 @@ const initialState = {
   streamPreview: "",
   startedAt: null,
   errorMessage: null,
+  results: [] as BenchmarkResult[],
+  viewingRunId: null,
+  blindMode: false,
+  scoreAllMode: false,
+  scoreAllPromptIndex: 0,
+  autoJudgeProgress: null,
 };
 
 export const useBenchmarkStore = create<BenchmarkState>((set, get) => ({
@@ -83,4 +108,46 @@ export const useBenchmarkStore = create<BenchmarkState>((set, get) => ({
   setError: (message) => set({ phase: "error", errorMessage: message }),
 
   reset: () => set(initialState),
+
+  setResults: (results) => set({ results }),
+
+  viewRun: (runId, results) =>
+    set({
+      phase: "results",
+      viewingRunId: runId,
+      results,
+      scoreAllMode: false,
+      scoreAllPromptIndex: 0,
+      autoJudgeProgress: null,
+    }),
+
+  toggleBlindMode: () => set((s) => ({ blindMode: !s.blindMode })),
+
+  enterScoreAllMode: () => set({ scoreAllMode: true, scoreAllPromptIndex: 0 }),
+
+  exitScoreAllMode: () => set({ scoreAllMode: false }),
+
+  nextPrompt: () => {
+    const { scoreAllPromptIndex, results } = get();
+    const promptIds = [...new Set(results.map((r) => r.prompt_id))];
+    if (scoreAllPromptIndex < promptIds.length - 1) {
+      set({ scoreAllPromptIndex: scoreAllPromptIndex + 1 });
+    }
+  },
+
+  prevPrompt: () => {
+    const { scoreAllPromptIndex } = get();
+    if (scoreAllPromptIndex > 0) {
+      set({ scoreAllPromptIndex: scoreAllPromptIndex - 1 });
+    }
+  },
+
+  setAutoJudgeProgress: (progress) => set({ autoJudgeProgress: progress }),
+
+  updateResultScore: (resultId, score) =>
+    set((s) => ({
+      results: s.results.map((r) =>
+        r.id === resultId ? { ...r, manual_score: score } : r
+      ),
+    })),
 }));

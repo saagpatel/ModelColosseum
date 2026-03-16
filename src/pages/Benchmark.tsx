@@ -3,7 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../stores/appStore";
 import { useBenchmarkStore } from "../stores/benchmarkStore";
 import { useBenchmarkEvents } from "../hooks/useBenchmarkEvents";
-import type { TestSuite, Prompt } from "../types";
+import { ResultsGrid } from "../components/benchmark/ResultsGrid";
+import { ScoreAllMode } from "../components/benchmark/ScoreAllMode";
+import { AutoJudgePanel } from "../components/benchmark/AutoJudgePanel";
+import { RunHistory } from "../components/benchmark/RunHistory";
+import { RunComparison } from "../components/benchmark/RunComparison";
+import type { TestSuite, Prompt, BenchmarkResult } from "../types";
 
 type PromptCategory =
   | "coding"
@@ -538,11 +543,18 @@ export function Benchmark() {
     selectedSuiteId,
     prompts,
     runId,
+    results,
+    blindMode,
+    scoreAllMode,
+    viewingRunId,
     setSuites,
     selectSuite,
     setPrompts,
     startConfiguring,
     startRun,
+    viewRun,
+    toggleBlindMode,
+    enterScoreAllMode,
     reset,
   } = useBenchmarkStore();
 
@@ -550,8 +562,26 @@ export function Benchmark() {
   const [newSuiteName, setNewSuiteName] = useState("");
   const [showNewSuiteInput, setShowNewSuiteInput] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [showRunHistory, setShowRunHistory] = useState(false);
+  const [compareRuns, setCompareRuns] = useState<[number, number] | null>(null);
+  const [showAutoJudge, setShowAutoJudge] = useState(false);
 
   useBenchmarkEvents(runId);
+
+  // Auto-load results when benchmark completes
+  useEffect(() => {
+    if (phase !== "complete" || runId === null) return;
+    const load = async () => {
+      try {
+        const data = await invoke<BenchmarkResult[]>("get_benchmark_results", { runId });
+        viewRun(runId, data);
+      } catch (err) {
+        console.error("get_benchmark_results error:", err);
+      }
+    };
+    void load();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, runId]);
 
   // Load suites on mount
   useEffect(() => {
@@ -663,6 +693,25 @@ export function Benchmark() {
     }
   };
 
+  const handleScoreChange = async (resultId: number, score: number) => {
+    try {
+      await invoke("score_result", { resultId, score });
+      useBenchmarkStore.getState().updateResultScore(resultId, score);
+    } catch (err) {
+      console.error("score_result error:", err);
+    }
+  };
+
+  const handleViewRun = async (rid: number) => {
+    try {
+      const data = await invoke<BenchmarkResult[]>("get_benchmark_results", { runId: rid });
+      viewRun(rid, data);
+      setShowRunHistory(false);
+    } catch (err) {
+      console.error("get_benchmark_results error:", err);
+    }
+  };
+
   const handleStartBenchmark = async (modelIds: number[]) => {
     if (selectedSuiteId === null) return;
     try {
@@ -691,7 +740,7 @@ export function Benchmark() {
     return <RunningOverlay runId={runId} />;
   }
 
-  // ── Phase: complete ──
+  // ── Phase: complete (transitioning to results via useEffect) ──
   if (phase === "complete") {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4">
@@ -699,15 +748,145 @@ export function Benchmark() {
           ✓
         </div>
         <h2 className="text-2xl font-bold text-slate-100">Benchmark complete!</h2>
-        <p className="text-sm text-slate-500">
-          Results have been saved to the database.
-        </p>
-        <button
-          onClick={reset}
-          className="h-10 rounded-lg bg-gold-500 px-6 text-sm font-bold text-slate-950 transition-colors hover:bg-gold-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-400"
-        >
-          Back to Editor
-        </button>
+        <p className="animate-pulse text-sm text-slate-500">Loading results...</p>
+      </div>
+    );
+  }
+
+  // ── Phase: results ──
+  if (phase === "results") {
+    // Run comparison view
+    if (compareRuns !== null) {
+      return (
+        <div className="flex h-full flex-col bg-slate-950">
+          <RunComparison
+            runA={compareRuns[0]}
+            runB={compareRuns[1]}
+            onBack={() => setCompareRuns(null)}
+          />
+        </div>
+      );
+    }
+
+    // Run history view
+    if (showRunHistory) {
+      return (
+        <div className="flex h-full flex-col bg-slate-950">
+          <div className="flex shrink-0 items-center gap-4 border-b border-slate-800 px-6 py-4">
+            <button
+              onClick={() => setShowRunHistory(false)}
+              className="flex items-center gap-1.5 text-sm text-slate-400 transition-colors hover:text-slate-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
+            >
+              ← Back to Results
+            </button>
+            <h2 className="text-base font-semibold text-slate-100">Past Runs</h2>
+          </div>
+          <RunHistory
+            onViewRun={(rid) => void handleViewRun(rid)}
+            onCompare={(a, b) => {
+              setCompareRuns([a, b]);
+              setShowRunHistory(false);
+            }}
+          />
+        </div>
+      );
+    }
+
+    // Score all mode
+    if (scoreAllMode) {
+      return (
+        <ScoreAllMode onScoreChange={(id, score) => void handleScoreChange(id, score)} />
+      );
+    }
+
+    // Main results grid
+    return (
+      <div className="flex h-full flex-col bg-slate-950">
+        {/* Auto-judge overlay */}
+        {showAutoJudge && viewingRunId !== null && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
+            <div className="w-full max-w-md">
+              <AutoJudgePanel
+                runId={viewingRunId}
+                onComplete={async () => {
+                  setShowAutoJudge(false);
+                  if (viewingRunId !== null) {
+                    try {
+                      const data = await invoke<BenchmarkResult[]>("get_benchmark_results", {
+                        runId: viewingRunId,
+                      });
+                      viewRun(viewingRunId, data);
+                    } catch (err) {
+                      console.error("get_benchmark_results error:", err);
+                    }
+                  }
+                }}
+              />
+              <button
+                onClick={() => setShowAutoJudge(false)}
+                className="mt-3 w-full rounded-lg bg-slate-800 py-2 text-sm font-medium text-slate-400 transition-colors hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Header */}
+        <div className="flex shrink-0 items-center justify-between border-b border-slate-800 px-6 py-3">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={reset}
+              className="flex items-center gap-1.5 text-sm text-slate-400 transition-colors hover:text-slate-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
+            >
+              ← Editor
+            </button>
+            <span className="text-slate-700">|</span>
+            <h1 className="text-sm font-bold text-slate-100">Benchmark Results</h1>
+            {viewingRunId !== null && (
+              <span className="rounded bg-slate-800 px-2 py-0.5 text-xs text-slate-500">
+                Run #{viewingRunId}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowRunHistory(true)}
+              className="h-8 rounded-lg bg-slate-800 px-3 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
+            >
+              Past Runs
+            </button>
+            <button
+              onClick={toggleBlindMode}
+              className={`h-8 rounded-lg px-3 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500 ${
+                blindMode
+                  ? "bg-gold-500 text-slate-950"
+                  : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+              }`}
+            >
+              {blindMode ? "Blind ON" : "Blind Mode"}
+            </button>
+            <button
+              onClick={() => setShowAutoJudge(true)}
+              className="h-8 rounded-lg bg-slate-800 px-3 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
+            >
+              Auto-Judge
+            </button>
+            <button
+              onClick={enterScoreAllMode}
+              className="h-8 rounded-lg bg-gold-500 px-3 text-xs font-bold text-slate-950 transition-colors hover:bg-gold-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-400"
+            >
+              Score All
+            </button>
+          </div>
+        </div>
+
+        {/* Results grid */}
+        <ResultsGrid
+          results={results}
+          blindMode={blindMode}
+          onScoreChange={(id, score) => void handleScoreChange(id, score)}
+        />
       </div>
     );
   }
@@ -734,6 +913,31 @@ export function Benchmark() {
   }
 
   // ── Phase: editing + configuring ──
+
+  // Past runs modal from editor
+  if (showRunHistory) {
+    return (
+      <div className="flex h-full flex-col bg-slate-950">
+        <div className="flex shrink-0 items-center gap-4 border-b border-slate-800 px-6 py-4">
+          <button
+            onClick={() => setShowRunHistory(false)}
+            className="flex items-center gap-1.5 text-sm text-slate-400 transition-colors hover:text-slate-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
+          >
+            ← Back to Editor
+          </button>
+          <h2 className="text-base font-semibold text-slate-100">Past Runs</h2>
+        </div>
+        <RunHistory
+          onViewRun={(rid) => void handleViewRun(rid)}
+          onCompare={(a, b) => {
+            setCompareRuns([a, b]);
+            setShowRunHistory(false);
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full flex-col bg-slate-950">
       {/* Configure modal overlay */}
@@ -747,13 +951,21 @@ export function Benchmark() {
       {/* Header */}
       <div className="flex h-14 shrink-0 items-center justify-between border-b border-slate-800 px-6">
         <h1 className="text-base font-bold text-slate-100">Benchmark Mode</h1>
-        <button
-          onClick={startConfiguring}
-          disabled={selectedSuiteId === null || prompts.length === 0}
-          className="h-10 rounded-lg bg-gold-500 px-5 text-sm font-bold text-slate-950 transition-colors hover:bg-gold-400 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-400"
-        >
-          Run Benchmark
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowRunHistory(true)}
+            className="h-9 rounded-lg bg-slate-800 px-4 text-sm font-medium text-slate-300 transition-colors hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
+          >
+            Past Runs
+          </button>
+          <button
+            onClick={startConfiguring}
+            disabled={selectedSuiteId === null || prompts.length === 0}
+            className="h-10 rounded-lg bg-gold-500 px-5 text-sm font-bold text-slate-950 transition-colors hover:bg-gold-400 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-400"
+          >
+            Run Benchmark
+          </button>
+        </div>
       </div>
 
       {loadError && (

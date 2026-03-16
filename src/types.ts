@@ -119,3 +119,69 @@ export interface BenchmarkErrorPayload {
   run_id: number;
   message: string;
 }
+
+export interface BenchmarkResult {
+  id: number;
+  run_id: number;
+  prompt_id: number;
+  model_id: number;
+  model_name: string;
+  prompt_title: string;
+  prompt_category: string;
+  output: string;
+  tokens_generated: number;
+  time_to_first_token_ms: number | null;
+  total_time_ms: number;
+  tokens_per_second: number | null;
+  manual_score: number | null;
+  auto_judge_score: number | null;
+  auto_judge_notes: string | null;
+  created_at: string;
+}
+
+export interface BenchmarkRunSummary {
+  id: number;
+  suite_id: number;
+  suite_name: string;
+  status: string;
+  model_count: number;
+  prompt_count: number;
+  scored_count: number;
+  total_results: number;
+  started_at: string;
+  completed_at: string | null;
+}
+
+export interface BenchmarkLeaderboardEntry {
+  model_id: number;
+  model_name: string;
+  display_name: string;
+  avg_score: number | null;
+  category_scores: Record<string, number>;
+  avg_tps: number | null;
+  avg_ttft_ms: number | null;
+  total_prompts_scored: number;
+}
+
+export interface RunComparisonEntry {
+  prompt_id: number;
+  prompt_title: string;
+  prompt_category: string;
+  model_id: number;
+  model_name: string;
+  run_a_score: number | null;
+  run_b_score: number | null;
+  score_delta: number | null;
+}
+
+export interface AutoJudgeProgressPayload {
+  run_id: number;
+  completed: number;
+  total: number;
+  current_model: string;
+}
+
+export interface AutoJudgeCompletePayload {
+  run_id: number;
+  scores_added: number;
+}

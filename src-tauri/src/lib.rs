@@ -324,6 +324,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .manage(debate::ActiveDebates(Arc::new(Mutex::new(HashMap::new()))))
         .manage(benchmark::ActiveBenchmarks(Arc::new(Mutex::new(HashMap::new()))))
+        .manage(benchmark::ActiveJudgeRuns(Arc::new(Mutex::new(HashMap::new()))))
         .invoke_handler(tauri::generate_handler![
             health_check,
             list_models,
@@ -346,6 +347,13 @@ pub fn run() {
             benchmark::reorder_prompts,
             benchmark::start_benchmark,
             benchmark::cancel_benchmark,
+            benchmark::get_benchmark_results,
+            benchmark::score_result,
+            benchmark::list_benchmark_runs,
+            benchmark::auto_judge_benchmark,
+            benchmark::cancel_auto_judge,
+            benchmark::get_benchmark_leaderboard,
+            benchmark::get_run_comparison,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

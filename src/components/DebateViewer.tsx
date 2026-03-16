@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { DebatePanel } from "./DebatePanel";
 import { useDebateEvents } from "../hooks/useDebateEvents";
@@ -23,6 +23,16 @@ export function DebateViewer() {
   const panelARef = useRef<HTMLDivElement>(null);
   const panelBRef = useRef<HTMLDivElement>(null);
   const [isVoting, setIsVoting] = useState(false);
+  const [winnerSide, setWinnerSide] = useState<"a" | "b" | undefined>(undefined);
+  const winnerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (winnerTimerRef.current !== null) {
+        clearTimeout(winnerTimerRef.current);
+      }
+    };
+  }, []);
 
   const {
     phase,
@@ -61,6 +71,12 @@ export function DebateViewer() {
     try {
       const result = await invoke<VoteResult>("vote_debate", { debateId, winner });
       setVoteResult(result.rating_a_before, result.rating_a_after, result.rating_b_before, result.rating_b_after);
+      const side = winner === "model_a" ? "a" : winner === "model_b" ? "b" : undefined;
+      setWinnerSide(side);
+      winnerTimerRef.current = setTimeout(() => {
+        setWinnerSide(undefined);
+        winnerTimerRef.current = null;
+      }, 2000);
     } catch (err) {
       console.error("Vote failed:", err);
     } finally {
@@ -82,11 +98,12 @@ export function DebateViewer() {
           isWaiting={false}
           isComplete={phase === "complete" || phase === "voted" || isError || isAborted}
           eloDelta={eloDeltaA ?? undefined}
+          winner={winnerSide}
         />
 
         {/* Center Column */}
         <div className="flex w-20 shrink-0 flex-col items-center justify-center gap-4">
-          <div className="flex h-12 w-12 items-center justify-center rounded-full border border-gold-500/30 bg-gold-500/10 text-sm font-black text-gold-400">
+          <div className={`flex h-12 w-12 items-center justify-center rounded-full border border-gold-500/30 bg-gold-500/10 text-sm font-black text-gold-400 ${isDebating ? "animate-pulse-glow" : ""}`}>
             VS
           </div>
 
@@ -172,6 +189,7 @@ export function DebateViewer() {
           isWaiting={false}
           isComplete={phase === "complete" || phase === "voted" || isError || isAborted}
           eloDelta={eloDeltaB ?? undefined}
+          winner={winnerSide}
         />
       </div>
     </div>

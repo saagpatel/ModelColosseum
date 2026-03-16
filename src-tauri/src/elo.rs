@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn weak_beats_strong_large_change() {
         // Weak (1200) beats strong (1800) — upset, big swing
-        let (new_a, new_b, _, _) = update_ratings(1200.0, 1800.0, Outcome::Win, 50, 50);
+        let (new_a, _new_b, _, _) = update_ratings(1200.0, 1800.0, Outcome::Win, 50, 50);
         let change_a = new_a - 1200.0;
         assert!(change_a > 21.0, "Upset winner gains big, got +{change_a}");
     }
@@ -151,6 +151,35 @@ mod tests {
         // 400 point difference → ~0.909 expected for the stronger player
         let e = expected_score(1900.0, 1500.0);
         assert!((e - 0.909).abs() < 0.01, "400pt advantage → ~0.91, got {e}");
+    }
+
+    #[test]
+    fn equal_ratings_loss_updates_symmetrically() {
+        let (new_a, new_b, _, _) = update_ratings(1500.0, 1500.0, Outcome::Loss, 50, 50);
+        // With K=24, equal ratings: A loses 12, B gains 12
+        assert!(
+            (new_a - 1488.0).abs() < 0.001,
+            "A should be ~1488 after loss, got {new_a}"
+        );
+        assert!(
+            (new_b - 1512.0).abs() < 0.001,
+            "B should be ~1512 after A's loss, got {new_b}"
+        );
+    }
+
+    #[test]
+    fn loss_is_inverse_of_win() {
+        let (win_a, win_b, _, _) = update_ratings(1500.0, 1500.0, Outcome::Win, 50, 50);
+        let (loss_a, loss_b, _, _) = update_ratings(1500.0, 1500.0, Outcome::Loss, 50, 50);
+        // Win for A should mirror loss for A
+        assert!(
+            (win_a - loss_b).abs() < 0.001,
+            "A's win rating should equal B's loss-counterpart rating"
+        );
+        assert!(
+            (win_b - loss_a).abs() < 0.001,
+            "B's win-counterpart rating should equal A's loss rating"
+        );
     }
 
     #[test]

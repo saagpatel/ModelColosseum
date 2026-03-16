@@ -36,3 +36,22 @@ body {
   vertical-align: text-bottom;
   margin-left: 2px;
 }
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+  50% { box-shadow: 0 0 12px 4px rgba(245, 158, 11, 0.35); }
+}
+@keyframes winner-glow {
+  0% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.6); }
+  40% { box-shadow: 0 0 20px 6px rgba(245, 158, 11, 0.35); }
+  100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+}
+@keyframes elo-pop {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.35); }
+  100% { transform: scale(1); }
+}
+
+.animate-pulse-glow { animation: pulse-glow 2s ease-in-out infinite; }
+.animate-winner-glow { animation: winner-glow 2s ease-out forwards; }
+.animate-elo-pop { animation: elo-pop 0.4s ease-out; }

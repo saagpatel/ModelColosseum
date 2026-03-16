@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { LineChart, Line, ResponsiveContainer } from "recharts";
 import { BenchmarkLeaderboard } from "../components/benchmark/BenchmarkLeaderboard";
+import { downloadBlob } from "../utils/download";
 import type { Model, EloHistoryPoint, UserStats } from "../types";
 
 type SortKey = "elo_rating" | "arena_wins" | "arena_losses" | "arena_draws" | "total_debates";
@@ -84,6 +85,7 @@ export function Leaderboard() {
     <th
       className="cursor-pointer px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-slate-400 transition-colors hover:text-gold-400"
       onClick={() => handleSort(field)}
+      aria-sort={sortKey === field ? (sortDir === "desc" ? "descending" : "ascending") : "none"}
     >
       {label}
       {sortKey === field && (
@@ -94,8 +96,40 @@ export function Leaderboard() {
 
   if (loading && tab === "arena") {
     return (
-      <div className="flex h-full items-center justify-center">
-        <span className="animate-pulse text-sm text-slate-500">Loading leaderboard...</span>
+      <div className="flex h-full flex-col gap-6 p-6">
+        <div className="flex items-center justify-between">
+          <div className="h-7 w-40 animate-pulse rounded bg-slate-800" />
+        </div>
+        <div className="min-h-0 flex-1 overflow-auto rounded-xl border border-slate-800">
+          <table className="w-full">
+            <thead className="bg-slate-900/95">
+              <tr className="border-b border-slate-800">
+                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-400">#</th>
+                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-400">Model</th>
+                <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-slate-400">Elo</th>
+                <th className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-slate-400">Trend</th>
+                <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-slate-400">W</th>
+                <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-slate-400">L</th>
+                <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-slate-400">D</th>
+                <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-slate-400">Debates</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Array.from({ length: 6 }, (_, i) => (
+                <tr key={i} className="border-b border-slate-800/50">
+                  <td className="px-4 py-3"><div className="h-4 w-6 animate-pulse rounded bg-slate-800" /></td>
+                  <td className="px-4 py-3"><div className="h-4 w-32 animate-pulse rounded bg-slate-800" /></td>
+                  <td className="px-4 py-3"><div className="ml-auto h-4 w-12 animate-pulse rounded bg-slate-800" /></td>
+                  <td className="px-4 py-3"><div className="mx-auto h-4 w-20 animate-pulse rounded bg-slate-800" /></td>
+                  <td className="px-4 py-3"><div className="ml-auto h-4 w-8 animate-pulse rounded bg-slate-800" /></td>
+                  <td className="px-4 py-3"><div className="ml-auto h-4 w-8 animate-pulse rounded bg-slate-800" /></td>
+                  <td className="px-4 py-3"><div className="ml-auto h-4 w-8 animate-pulse rounded bg-slate-800" /></td>
+                  <td className="px-4 py-3"><div className="ml-auto h-4 w-10 animate-pulse rounded bg-slate-800" /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     );
   }
@@ -114,12 +148,27 @@ export function Leaderboard() {
             </button>
           </div>
           {tab === "arena" && (
-            <button
-              onClick={() => void fetchData()}
-              className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-700"
-            >
-              Refresh
-            </button>
+            <>
+              <button
+                onClick={() => void fetchData()}
+                className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
+              >
+                Refresh
+              </button>
+              <button
+                onClick={async () => {
+                  try {
+                    const csv = await invoke<string>("export_leaderboard");
+                    downloadBlob(csv, "leaderboard.csv", "text/csv");
+                  } catch (err) {
+                    console.error("export_leaderboard error:", err);
+                  }
+                }}
+                className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
+              >
+                Export CSV
+              </button>
+            </>
           )}
         </div>
       </div>

@@ -21,12 +21,13 @@ A local-first Tauri 2.0 desktop app for evaluating Ollama models across three mo
 React frontend communicates with Rust backend via Tauri IPC (`invoke` for commands, `listen` for streaming events). Rust backend owns all Ollama communication, SQLite access, and Elo calculations. Frontend is purely presentational + state management.
 
 Key modules:
-- `src-tauri/src/db.rs` — SQLite connection, migrations, queries
-- `src-tauri/src/ollama.rs` — Ollama REST client with streaming
-- `src-tauri/src/debate.rs` — Arena + Sparring debate engine
-- `src-tauri/src/benchmark.rs` — Benchmark runner
-- `src-tauri/src/elo.rs` — Elo rating calculations
-- `src-tauri/src/prompts.rs` — System prompt templates
+- `src-tauri/src/db.rs` — SQLite connection, migrations, schema (14 tables), seed data
+- `src-tauri/src/ollama.rs` — Ollama REST client with streaming (reads configurable URL from settings)
+- `src-tauri/src/lib.rs` — All Tauri commands, Model/Setting structs, settings key whitelist
+- `src-tauri/src/debate.rs` — Arena (3 formats) + Sparring debate engine, vote + Elo, scorecards
+- `src-tauri/src/benchmark.rs` — CRUD, runner, auto-judge, blind comparison, hardware metrics, import/export
+- `src-tauri/src/elo.rs` — Elo rating calculations (67 tests)
+- `src-tauri/src/prompts.rs` — System prompt templates (arena, formal, socratic, sparring, scorecard judge)
 
 ## Development Conventions
 - TypeScript strict mode. No `any` types.
@@ -39,13 +40,14 @@ Key modules:
 - No unwrap() in production Rust code — use ? operator or proper error handling
 
 ## Current Phase
-**Phase 1: Arena Mode** — Phase 0 complete, all foundation verified.
-- [x] Scaffold Tauri 2.0 with React 19 + TS + Vite + Tailwind
-- [x] Set up SQLite with rusqlite (WAL mode, all tables)
-- [x] Build Ollama REST client (list, show, health, generate_stream)
-- [x] Wire model list to frontend with ModelSelector component
-- [x] Implement Elo calculation module with unit tests
-- [x] Streaming pipeline validated (Ollama NDJSON → Rust mpsc → Tauri events → React)
+**v1.0.0 — Feature Complete** (all phases done, audit remediation applied)
+
+- [x] **Phase 0: Foundation** — Tauri 2.0 scaffold, SQLite (14 tables, WAL), Ollama REST client, Elo module
+- [x] **Phase 1: Arena Mode** — Debate engine (freestyle/formal/socratic), vote + Elo, leaderboard, history
+- [x] **Phase 2: Benchmark** — CRUD suites/prompts, runner with TTFT/TPS metrics, manual + auto-judge scoring, blind comparison, hardware metrics, import/export
+- [x] **Phase 3: Sparring Ring** — Human vs AI debates, 3 difficulty levels, 4-phase structure, scorecards, user Elo
+- [x] **Phase 4: Polish** — 3 debate formats, topic suggestions, settings page, blind test, animations, skeleton loading, export (Markdown/CSV/JSON)
+- [x] **Audit** — Security hardening (configurable Ollama URL, query limit caps, settings key whitelist), accessibility (ARIA attributes), error handling, 67 Rust tests
 
 ## Key Decisions Made
 | Decision | Choice | Rationale |

@@ -69,8 +69,23 @@ export function Settings() {
 
   if (!loaded) {
     return (
-      <div className="flex h-full items-center justify-center">
-        <span className="text-sm text-slate-500">Loading settings...</span>
+      <div className="mx-auto max-w-2xl space-y-10 p-6">
+        <div>
+          <div className="h-8 w-32 animate-pulse rounded bg-slate-800" />
+          <div className="mt-2 h-4 w-64 animate-pulse rounded bg-slate-800" />
+        </div>
+        <div className="space-y-6">
+          <div className="h-5 w-20 animate-pulse rounded border-b border-slate-800 pb-2 bg-slate-800" />
+          {Array.from({ length: 3 }, (_, i) => (
+            <div key={i} className="flex items-center justify-between">
+              <div className="space-y-1">
+                <div className="h-4 w-40 animate-pulse rounded bg-slate-800" />
+                <div className="h-3 w-56 animate-pulse rounded bg-slate-800" />
+              </div>
+              <div className="h-8 w-24 animate-pulse rounded-lg bg-slate-800" />
+            </div>
+          ))}
+        </div>
       </div>
     );
   }
@@ -129,14 +144,14 @@ export function Settings() {
         <div className="flex items-center justify-between gap-4">
           <div className="min-w-0 flex-1">
             <span className="block text-sm font-medium text-slate-300">Ollama URL</span>
-            <span className="text-xs text-slate-500">Display only — not yet configurable</span>
+            <span className="text-xs text-slate-500">Base URL for the Ollama API</span>
           </div>
           <div className="flex items-center gap-2">
             <input
               type="text"
               value={get("ollama_url", "http://localhost:11434")}
-              disabled
-              className="w-56 rounded-lg border border-slate-700 bg-slate-800/30 px-3 py-2 text-sm text-slate-500 outline-none"
+              onChange={(e) => void updateSetting("ollama_url", e.target.value)}
+              className="w-56 rounded-lg border border-slate-700 bg-slate-800/50 px-3 py-2 text-sm text-slate-200 outline-none focus:border-gold-500/50"
             />
             <button
               onClick={() => void handleTestConnection()}
@@ -164,6 +179,8 @@ export function Settings() {
             <span className="text-xs text-slate-500">Stream both models simultaneously when possible</span>
           </div>
           <button
+            role="switch"
+            aria-checked={get("concurrent_streaming", "true") === "true"}
             onClick={() =>
               void updateSetting(
                 "concurrent_streaming",

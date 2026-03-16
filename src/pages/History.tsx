@@ -79,8 +79,17 @@ export function History() {
 
   if (loading && debates.length === 0) {
     return (
-      <div className="flex h-full items-center justify-center">
-        <span className="animate-pulse text-sm text-slate-500">Loading history...</span>
+      <div className="flex h-full flex-col gap-6 p-6">
+        <div className="h-7 w-48 animate-pulse rounded bg-slate-800" />
+        <div className="flex items-center gap-4">
+          <div className="h-10 w-48 animate-pulse rounded-lg bg-slate-800" />
+          <div className="h-10 w-36 animate-pulse rounded-lg bg-slate-800" />
+        </div>
+        <div className="flex flex-col gap-2">
+          {Array.from({ length: 4 }, (_, i) => (
+            <div key={i} className="h-16 w-full animate-pulse rounded-xl bg-slate-800/50" />
+          ))}
+        </div>
       </div>
     );
   }
@@ -94,11 +103,13 @@ export function History() {
         <input
           type="text"
           placeholder="Search topics..."
+          aria-label="Search debate topics"
           value={searchInput}
           onChange={(e) => setSearchInput(e.target.value)}
           className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200 placeholder-slate-500 outline-none focus:border-gold-500/50"
         />
         <select
+          aria-label="Filter by model"
           value={filterModelId ?? ""}
           onChange={(e) => setFilterModelId(e.target.value ? Number(e.target.value) : null)}
           className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200 outline-none focus:border-gold-500/50"

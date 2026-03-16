@@ -1,6 +1,6 @@
 {
   "productName": "Model Colosseum",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "identifier": "com.modelcolosseum.app",
   "build": {
     "beforeDevCommand": "pnpm dev",

@@ -519,6 +519,34 @@ mod tests {
     }
 
     #[test]
+    fn unknown_role_falls_back_to_on() {
+        let prompt = build_arena_system_prompt("unknown", "test topic", 1, 300, &[], "model_a");
+        assert!(prompt.contains("ON"), "unknown role should fall back to ON");
+    }
+
+    #[test]
+    fn unknown_difficulty_falls_back() {
+        let prompt = build_sparring_system_prompt("legendary", "pro", "AI", "opening", 200, &[]);
+        assert!(
+            prompt.contains("debating IN FAVOR OF"),
+            "unknown difficulty should still produce valid prompt"
+        );
+        assert!(
+            !prompt.contains("challenging but fair"),
+            "unknown difficulty should not match casual"
+        );
+    }
+
+    #[test]
+    fn unknown_phase_falls_back() {
+        let prompt = build_sparring_system_prompt("casual", "pro", "AI", "unknown_phase", 200, &[]);
+        assert!(
+            prompt.contains("Continue the debate"),
+            "unknown phase should fall back to default instruction"
+        );
+    }
+
+    #[test]
     fn socratic_defender_prompt() {
         let history = vec![RoundContent {
             speaker: "model_a".into(),

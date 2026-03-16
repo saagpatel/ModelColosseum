@@ -5,13 +5,15 @@ use std::sync::Mutex;
 static DB: std::sync::OnceLock<Mutex<Connection>> = std::sync::OnceLock::new();
 
 fn db_path() -> PathBuf {
-    let home = dirs::home_dir().expect("could not resolve home directory");
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     home.join(".model-colosseum")
 }
 
 pub fn init_db() -> SqlResult<()> {
     let dir = db_path();
-    std::fs::create_dir_all(&dir).expect("could not create data directory");
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        rusqlite::Error::InvalidPath(dir.join(format!("(create_dir_all failed: {e})")))
+    })?;
     let path = dir.join("colosseum.db");
 
     let conn = Connection::open(&path)?;
@@ -20,6 +22,9 @@ pub fn init_db() -> SqlResult<()> {
     conn.execute_batch("PRAGMA foreign_keys=ON;")?;
 
     conn.execute_batch(SCHEMA)?;
+    // Idempotent migration — swallows "duplicate column" error on subsequent launches
+    conn.execute_batch("ALTER TABLE benchmark_runs ADD COLUMN hardware_metrics TEXT;")
+        .ok();
     seed_defaults(&conn)?;
 
     DB.set(Mutex::new(conn))

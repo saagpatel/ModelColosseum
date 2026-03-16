@@ -4,11 +4,27 @@ use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 use tokio::sync::mpsc;
 
-const OLLAMA_BASE: &str = "http://localhost:11434";
+const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 
 fn client() -> &'static Client {
     static HTTP: OnceLock<Client> = OnceLock::new();
     HTTP.get_or_init(Client::new)
+}
+
+/// Read the configured Ollama URL from settings, falling back to the default.
+fn get_base_url() -> String {
+    if let Ok(conn) = crate::db::get_db().lock() {
+        if let Ok(url) = conn.query_row(
+            "SELECT value FROM settings WHERE key = 'ollama_url'",
+            [],
+            |row| row.get::<_, String>(0),
+        ) {
+            if !url.is_empty() {
+                return url.trim_end_matches('/').to_string();
+            }
+        }
+    }
+    DEFAULT_OLLAMA_URL.to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -57,8 +73,9 @@ pub struct StreamChunk {
 }
 
 pub async fn health_check() -> Result<bool, String> {
+    let base = get_base_url();
     match client()
-        .get(OLLAMA_BASE)
+        .get(&base)
         .timeout(std::time::Duration::from_secs(3))
         .send()
         .await
@@ -69,8 +86,9 @@ pub async fn health_check() -> Result<bool, String> {
 }
 
 pub async fn list_models() -> Result<Vec<OllamaModel>, String> {
+    let base = get_base_url();
     let resp = client()
-        .get(format!("{OLLAMA_BASE}/api/tags"))
+        .get(format!("{base}/api/tags"))
         .timeout(std::time::Duration::from_secs(10))
         .send()
         .await
@@ -85,8 +103,9 @@ pub async fn list_models() -> Result<Vec<OllamaModel>, String> {
 }
 
 pub async fn show_model(name: &str) -> Result<ShowResponse, String> {
+    let base = get_base_url();
     let resp = client()
-        .post(format!("{OLLAMA_BASE}/api/show"))
+        .post(format!("{base}/api/show"))
         .json(&serde_json::json!({ "name": name }))
         .timeout(std::time::Duration::from_secs(10))
         .send()
@@ -139,8 +158,9 @@ pub async fn generate_stream(
         body["options"] = serde_json::Value::Object(options);
     }
 
+    let base = get_base_url();
     let resp = client()
-        .post(format!("{OLLAMA_BASE}/api/generate"))
+        .post(format!("{base}/api/generate"))
         .json(&body)
         .send()
         .await

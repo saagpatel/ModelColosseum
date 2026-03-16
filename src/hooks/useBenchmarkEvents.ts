@@ -7,6 +7,7 @@ import type {
   BenchmarkStreamPayload,
   BenchmarkCompletePayload,
   BenchmarkErrorPayload,
+  BenchmarkMetricsPayload,
 } from "../types";
 
 export function useBenchmarkEvents(runId: number | null) {
@@ -40,6 +41,13 @@ export function useBenchmarkEvents(runId: number | null) {
       listen<BenchmarkErrorPayload>("benchmark:error", (event) => {
         if (event.payload.run_id !== runId) return;
         useBenchmarkStore.getState().setError(event.payload.message);
+      }),
+    );
+
+    unlisteners.push(
+      listen<BenchmarkMetricsPayload>("benchmark:metrics", (event) => {
+        if (event.payload.run_id !== runId) return;
+        useBenchmarkStore.getState().appendMetric(event.payload);
       }),
     );
 

@@ -90,7 +90,10 @@ fn parse_parameter_count(size_str: &str) -> Option<i64> {
     // "32B" → 32, "7.5B" → 8, "671M" → 0
     let s = size_str.trim().to_uppercase();
     if s.ends_with('B') {
-        s[..s.len() - 1].parse::<f64>().ok().map(|v| v.round() as i64)
+        s[..s.len() - 1]
+            .parse::<f64>()
+            .ok()
+            .map(|v| v.round() as i64)
     } else if s.ends_with('M') {
         // Millions — store as 0 for billion-scale comparison
         Some(0)
@@ -146,8 +149,11 @@ async fn get_leaderboard() -> Result<Vec<Model>, String> {
 }
 
 #[tauri::command]
-async fn get_model_elo_history(model_id: i64, limit: Option<i64>) -> Result<Vec<EloHistoryPoint>, String> {
-    let effective_limit = limit.unwrap_or(20);
+async fn get_model_elo_history(
+    model_id: i64,
+    limit: Option<i64>,
+) -> Result<Vec<EloHistoryPoint>, String> {
+    let effective_limit = limit.unwrap_or(20).min(500);
     let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
     let mut stmt = conn
         .prepare(
@@ -177,7 +183,7 @@ async fn get_debates(
     search: Option<String>,
     model_id: Option<i64>,
 ) -> Result<Vec<DebateSummary>, String> {
-    let effective_limit = limit.unwrap_or(20);
+    let effective_limit = limit.unwrap_or(20).min(500);
     let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
 
     // Build dynamic query
@@ -218,7 +224,9 @@ async fn get_debates(
          LIMIT ?{limit_param_idx}"
     );
 
-    let mut stmt = conn.prepare(&sql).map_err(|e| format!("query error: {e}"))?;
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("query error: {e}"))?;
 
     let params_refs: Vec<&dyn rusqlite::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
 
@@ -276,9 +284,7 @@ async fn refresh_models() -> Result<Vec<Model>, String> {
     for m in &ollama_models {
         let (param_count, quant, family) = match &m.details {
             Some(d) => (
-                d.parameter_size
-                    .as_deref()
-                    .and_then(parse_parameter_count),
+                d.parameter_size.as_deref().and_then(parse_parameter_count),
                 d.quantization_level.clone(),
                 d.family.clone(),
             ),
@@ -380,8 +386,12 @@ async fn export_debate_transcript(debate_id: i64) -> Result<String, String> {
 
     // 2. Resolve model display names
     let resolve_model_name = |id: Option<i64>| -> String {
-        let Some(mid) = id else { return "Unknown".into() };
-        let Ok(conn) = db::get_db().lock() else { return "Unknown".into() };
+        let Some(mid) = id else {
+            return "Unknown".into();
+        };
+        let Ok(conn) = db::get_db().lock() else {
+            return "Unknown".into();
+        };
         conn.query_row(
             "SELECT display_name FROM models WHERE id = ?1",
             rusqlite::params![mid],
@@ -473,7 +483,10 @@ async fn export_debate_transcript(debate_id: i64) -> Result<String, String> {
         }
 
         let speaker_label = match r.speaker.as_str() {
-            "human" => format!("You ({})", human_side.as_deref().unwrap_or("?").to_uppercase()),
+            "human" => format!(
+                "You ({})",
+                human_side.as_deref().unwrap_or("?").to_uppercase()
+            ),
             "model_a" => {
                 if mode == "arena" {
                     format!("PRO ({model_a_name})")
@@ -511,10 +524,16 @@ async fn export_debate_transcript(debate_id: i64) -> Result<String, String> {
         ));
         md.push('\n');
         if !sc.strongest_human_point.is_empty() {
-            md.push_str(&format!("**Strongest point:** {}\n\n", sc.strongest_human_point));
+            md.push_str(&format!(
+                "**Strongest point:** {}\n\n",
+                sc.strongest_human_point
+            ));
         }
         if !sc.weakest_human_point.is_empty() {
-            md.push_str(&format!("**Weakest point:** {}\n\n", sc.weakest_human_point));
+            md.push_str(&format!(
+                "**Weakest point:** {}\n\n",
+                sc.weakest_human_point
+            ));
         }
         if !sc.missed_argument.is_empty() {
             md.push_str(&format!("**Missed argument:** {}\n\n", sc.missed_argument));
@@ -552,8 +571,32 @@ async fn get_settings() -> Result<Vec<Setting>, String> {
     Ok(settings)
 }
 
+const ALLOWED_SETTING_KEYS: &[&str] = &[
+    "default_rounds",
+    "default_word_limit",
+    "concurrent_streaming",
+    "concurrent_max_params_billions",
+    "theme",
+    "elo_k_factor_initial",
+    "elo_k_factor_standard",
+    "elo_k_factor_veteran",
+    "elo_k_transition_games",
+    "elo_k_veteran_games",
+    "ollama_url",
+    "prompt_arena_pro",
+    "prompt_arena_con",
+    "prompt_formal_opening",
+    "prompt_formal_rebuttal",
+    "prompt_formal_closing",
+    "prompt_socratic_questioner",
+    "prompt_socratic_defender",
+];
+
 #[tauri::command]
 async fn update_setting(key: String, value: String) -> Result<(), String> {
+    if !ALLOWED_SETTING_KEYS.contains(&key.as_str()) {
+        return Err(format!("invalid setting key: {key}"));
+    }
     let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
     conn.execute(
         "INSERT INTO settings (key, value) VALUES (?1, ?2)
@@ -584,9 +627,18 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(debate::ActiveDebates(Arc::new(Mutex::new(HashMap::new()))))
-        .manage(debate::ActiveSparrings(Arc::new(Mutex::new(HashMap::new()))))
-        .manage(benchmark::ActiveBenchmarks(Arc::new(Mutex::new(HashMap::new()))))
-        .manage(benchmark::ActiveJudgeRuns(Arc::new(Mutex::new(HashMap::new()))))
+        .manage(debate::ActiveSparrings(Arc::new(
+            Mutex::new(HashMap::new()),
+        )))
+        .manage(benchmark::ActiveBenchmarks(Arc::new(Mutex::new(
+            HashMap::new(),
+        ))))
+        .manage(benchmark::ActiveJudgeRuns(Arc::new(Mutex::new(
+            HashMap::new(),
+        ))))
+        .manage(benchmark::ActiveBlindComparisons(Arc::new(Mutex::new(
+            HashMap::new(),
+        ))))
         .invoke_handler(tauri::generate_handler![
             health_check,
             list_models,
@@ -623,6 +675,14 @@ pub fn run() {
             benchmark::cancel_auto_judge,
             benchmark::get_benchmark_leaderboard,
             benchmark::get_run_comparison,
+            benchmark::start_blind_comparison,
+            benchmark::submit_blind_pick,
+            benchmark::finish_blind_comparison,
+            benchmark::get_benchmark_metrics,
+            benchmark::export_test_suite,
+            benchmark::import_test_suite,
+            benchmark::export_leaderboard,
+            benchmark::export_benchmark_report,
             get_settings,
             update_setting,
             reset_elo_ratings,

@@ -238,3 +238,43 @@ export interface UserStats {
   losses: number;
   draws: number;
 }
+
+export interface BlindPair {
+  prompt_id: number;
+  prompt_title: string;
+  prompt_category: string;
+  left_result_id: number;
+  left_output: string;
+  right_result_id: number;
+  right_output: string;
+}
+
+export interface BlindComparison {
+  id: number;
+  pairs: BlindPair[];
+}
+
+export interface BlindRevealEntry {
+  prompt_id: number;
+  prompt_title: string;
+  model_a_name: string;
+  model_b_name: string;
+  winner: string;
+}
+
+export interface BlindReveal {
+  model_a_name: string;
+  model_b_name: string;
+  model_a_wins: number;
+  model_b_wins: number;
+  ties: number;
+  entries: BlindRevealEntry[];
+}
+
+export interface BenchmarkMetricsPayload {
+  run_id: number;
+  cpu_percent: number;
+  memory_percent: number;
+  swap_percent: number;
+  timestamp_ms: number;
+}

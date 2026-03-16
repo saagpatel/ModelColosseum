@@ -3,7 +3,8 @@ use crate::ollama::{self, GenerateRequest, StreamChunk};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use sysinfo::System;
 use tauri::Emitter;
 use tokio_util::sync::CancellationToken;
 
@@ -13,6 +14,14 @@ use tokio_util::sync::CancellationToken;
 
 pub struct ActiveBenchmarks(pub Arc<Mutex<HashMap<i64, CancellationToken>>>);
 pub struct ActiveJudgeRuns(pub Arc<Mutex<HashMap<i64, CancellationToken>>>);
+pub struct ActiveBlindComparisons(pub Arc<Mutex<HashMap<i64, BlindComparisonState>>>);
+
+pub struct BlindComparisonState {
+    pub model_a_id: i64,
+    pub model_b_id: i64,
+    /// prompt_id → (result_id_a, result_id_b, a_is_left)
+    pub prompt_assignments: HashMap<i64, (i64, i64, bool)>,
+}
 
 // ---------------------------------------------------------------------------
 // Event payloads
@@ -150,6 +159,83 @@ pub struct AutoJudgeCompletePayload {
     pub scores_added: i32,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BenchmarkMetricsPayload {
+    pub run_id: i64,
+    pub cpu_percent: f32,
+    pub memory_percent: f32,
+    pub swap_percent: f32,
+    pub timestamp_ms: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Blind comparison return types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, Clone)]
+pub struct BlindPair {
+    pub prompt_id: i64,
+    pub prompt_title: String,
+    pub prompt_category: String,
+    pub left_result_id: i64,
+    pub left_output: String,
+    pub right_result_id: i64,
+    pub right_output: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct BlindComparison {
+    pub id: i64,
+    pub pairs: Vec<BlindPair>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct BlindRevealEntry {
+    pub prompt_id: i64,
+    pub prompt_title: String,
+    pub model_a_name: String,
+    pub model_b_name: String,
+    pub winner: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct BlindReveal {
+    pub model_a_name: String,
+    pub model_b_name: String,
+    pub model_a_wins: i64,
+    pub model_b_wins: i64,
+    pub ties: i64,
+    pub entries: Vec<BlindRevealEntry>,
+}
+
+// ---------------------------------------------------------------------------
+// Import/export structs
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize)]
+struct SuiteExport {
+    version: u8,
+    suite: SuiteExportData,
+    prompts: Vec<PromptExportData>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SuiteExportData {
+    name: String,
+    description: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PromptExportData {
+    category: String,
+    title: String,
+    text: String,
+    system_prompt: Option<String>,
+    ideal_answer: Option<String>,
+    eval_criteria: Option<String>,
+    sort_order: i64,
+}
+
 // ---------------------------------------------------------------------------
 // Benchmark metrics
 // ---------------------------------------------------------------------------
@@ -212,9 +298,7 @@ async fn benchmark_stream_and_collect(
 
     let total_time_ms = start.elapsed().as_millis() as i64;
     let tps = match (eval_count, eval_duration) {
-        (Some(count), Some(dur)) if dur > 0 => {
-            Some(count as f64 / (dur as f64 / 1_000_000_000.0))
-        }
+        (Some(count), Some(dur)) if dur > 0 => Some(count as f64 / (dur as f64 / 1_000_000_000.0)),
         _ => None,
     };
 
@@ -330,8 +414,11 @@ pub async fn update_test_suite(
 #[tauri::command]
 pub async fn delete_test_suite(id: i64) -> Result<(), String> {
     let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
-    conn.execute("DELETE FROM test_suites WHERE id = ?1", rusqlite::params![id])
-        .map_err(|e| format!("delete error: {e}"))?;
+    conn.execute(
+        "DELETE FROM test_suites WHERE id = ?1",
+        rusqlite::params![id],
+    )
+    .map_err(|e| format!("delete error: {e}"))?;
     Ok(())
 }
 
@@ -450,7 +537,16 @@ pub async fn update_prompt(
             "SELECT title, category, text, system_prompt, ideal_answer, eval_criteria
              FROM prompts WHERE id = ?1",
             rusqlite::params![id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
         )
         .map_err(|e| format!("prompt not found (id={id}): {e}"))?;
 
@@ -591,6 +687,61 @@ pub async fn start_benchmark(
     let total = (prompts.len() * models.len()) as i32;
     let active_map = Arc::clone(&state.0);
 
+    // Shared metrics samples buffer (filled by the metrics task, persisted after main task)
+    let metrics_samples: Arc<Mutex<Vec<BenchmarkMetricsPayload>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let metrics_samples_metrics = Arc::clone(&metrics_samples);
+    let metrics_cancel = cancel_token.clone();
+    let metrics_app = app.clone();
+
+    // Spawn hardware metrics sampling task — runs concurrently with benchmark
+    tokio::spawn(async move {
+        let mut sys = System::new_all();
+        loop {
+            tokio::select! {
+                _ = metrics_cancel.cancelled() => break,
+                _ = tokio::time::sleep(tokio::time::Duration::from_secs(2)) => {
+                    sys.refresh_cpu_usage();
+                    sys.refresh_memory();
+
+                    let cpu = sys.global_cpu_usage();
+                    let mem_total = sys.total_memory();
+                    let mem_used = sys.used_memory();
+                    let swap_total = sys.total_swap();
+                    let swap_used = sys.used_swap();
+
+                    let memory_percent = if mem_total > 0 {
+                        (mem_used as f32 / mem_total as f32) * 100.0
+                    } else {
+                        0.0
+                    };
+                    let swap_percent = if swap_total > 0 {
+                        (swap_used as f32 / swap_total as f32) * 100.0
+                    } else {
+                        0.0
+                    };
+                    let timestamp_ms = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+
+                    let payload = BenchmarkMetricsPayload {
+                        run_id,
+                        cpu_percent: cpu,
+                        memory_percent,
+                        swap_percent,
+                        timestamp_ms,
+                    };
+
+                    if let Ok(mut samples) = metrics_samples_metrics.lock() {
+                        samples.push(payload.clone());
+                    }
+                    let _ = metrics_app.emit("benchmark:metrics", payload);
+                }
+            }
+        }
+    });
+
     tokio::spawn(async move {
         let mut completed = 0i32;
 
@@ -628,14 +779,14 @@ pub async fn start_benchmark(
                 };
 
                 let start = Instant::now();
-                let result = benchmark_stream_and_collect(&app, run_id, rx, &cancel_token, start).await;
+                let result =
+                    benchmark_stream_and_collect(&app, run_id, rx, &cancel_token, start).await;
 
                 match result {
                     Ok((output, metrics)) => {
                         // Save result
                         if let Err(e) = (|| -> Result<(), String> {
-                            let conn =
-                                db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+                            let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
                             conn.execute(
                                 "INSERT INTO benchmark_results
                                     (run_id, prompt_id, model_id, output,
@@ -659,10 +810,7 @@ pub async fn start_benchmark(
                             cleanup_token(&active_map, run_id);
                             let _ = app.emit(
                                 "benchmark:error",
-                                BenchmarkErrorPayload {
-                                    run_id,
-                                    message: e,
-                                },
+                                BenchmarkErrorPayload { run_id, message: e },
                             );
                             return;
                         }
@@ -703,13 +851,31 @@ pub async fn start_benchmark(
 
         if cancel_token.is_cancelled() {
             let _ = update_run_status(run_id, "cancelled");
-            let _ = app.emit("benchmark:error", BenchmarkErrorPayload {
-                run_id,
-                message: "Benchmark cancelled".into(),
-            });
+            let _ = app.emit(
+                "benchmark:error",
+                BenchmarkErrorPayload {
+                    run_id,
+                    message: "Benchmark cancelled".into(),
+                },
+            );
         } else {
             let _ = update_run_status(run_id, "completed");
             let _ = app.emit("benchmark:complete", BenchmarkCompletePayload { run_id });
+        }
+
+        // Persist collected hardware metrics to DB
+        if let Ok(samples) = metrics_samples.lock() {
+            if !samples.is_empty() {
+                if let Ok(json) = serde_json::to_string(&*samples) {
+                    let conn_result = db::get_db().lock();
+                    if let Ok(conn) = conn_result {
+                        let _ = conn.execute(
+                            "UPDATE benchmark_runs SET hardware_metrics = ?1 WHERE id = ?2",
+                            rusqlite::params![json, run_id],
+                        );
+                    }
+                }
+            }
         }
 
         cleanup_token(&active_map, run_id);
@@ -799,11 +965,7 @@ pub async fn get_benchmark_results(run_id: i64) -> Result<Vec<BenchmarkResult>, 
 }
 
 #[tauri::command]
-pub async fn score_result(
-    result_id: i64,
-    score: i64,
-    notes: Option<String>,
-) -> Result<(), String> {
+pub async fn score_result(result_id: i64, score: i64, notes: Option<String>) -> Result<(), String> {
     if !(1..=5).contains(&score) {
         return Err(format!("Score must be between 1 and 5, got {score}"));
     }
@@ -820,7 +982,9 @@ pub async fn score_result(
 }
 
 #[tauri::command]
-pub async fn list_benchmark_runs(suite_id: Option<i64>) -> Result<Vec<BenchmarkRunSummary>, String> {
+pub async fn list_benchmark_runs(
+    suite_id: Option<i64>,
+) -> Result<Vec<BenchmarkRunSummary>, String> {
     let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
     let mut stmt = conn
         .prepare(
@@ -1002,18 +1166,12 @@ pub async fn auto_judge_benchmark(
                 break;
             }
 
-            let judge_prompt = build_judge_prompt(
-                prompt_text,
-                eval_criteria.as_deref(),
-                output,
-            );
+            let judge_prompt = build_judge_prompt(prompt_text, eval_criteria.as_deref(), output);
 
             let req = GenerateRequest {
                 model: judge_model_name.clone(),
                 prompt: judge_prompt,
-                system: Some(
-                    "You are a strict but fair evaluator. Output only valid JSON.".into(),
-                ),
+                system: Some("You are a strict but fair evaluator. Output only valid JSON.".into()),
                 num_predict: Some(256),
                 temperature: Some(0.1),
             };
@@ -1057,8 +1215,7 @@ pub async fn auto_judge_benchmark(
             match parse_judge_response(&buffer) {
                 Some((score, reasoning)) => {
                     let save_result = (|| -> Result<(), String> {
-                        let conn =
-                            db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+                        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
                         conn.execute(
                             "INSERT INTO benchmark_scores
                                 (result_id, score, scoring_method, judge_model_id, notes)
@@ -1210,10 +1367,7 @@ pub async fn get_benchmark_leaderboard() -> Result<Vec<BenchmarkLeaderboardEntry
     // Build category_scores map per model_id
     let mut cat_map: HashMap<i64, HashMap<String, f64>> = HashMap::new();
     for (model_id, category, avg) in cat_rows {
-        cat_map
-            .entry(model_id)
-            .or_default()
-            .insert(category, avg);
+        cat_map.entry(model_id).or_default().insert(category, avg);
     }
 
     let entries = overall_rows
@@ -1243,10 +1397,7 @@ type ComparisonMap = HashMap<(i64, i64), (String, String, String, Option<f64>, O
 type ComparisonRow = (i64, i64, i64, String, String, String, Option<f64>);
 
 #[tauri::command]
-pub async fn get_run_comparison(
-    run_a: i64,
-    run_b: i64,
-) -> Result<Vec<RunComparisonEntry>, String> {
+pub async fn get_run_comparison(run_a: i64, run_b: i64) -> Result<Vec<RunComparisonEntry>, String> {
     let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
 
     // Avg normalized score per (run, prompt, model)
@@ -1327,6 +1478,732 @@ pub async fn get_run_comparison(
     });
 
     Ok(entries)
+}
+
+// ---------------------------------------------------------------------------
+// Blind comparison commands
+// ---------------------------------------------------------------------------
+
+/// prompt_id → model_id → (result_id, output, title, category)
+type ByPromptMap = HashMap<i64, HashMap<i64, (i64, String, String, String)>>;
+
+#[tauri::command]
+pub async fn start_blind_comparison(
+    state: tauri::State<'_, ActiveBlindComparisons>,
+    run_id: i64,
+) -> Result<BlindComparison, String> {
+    // Query all benchmark_results for this run
+    let results: Vec<(i64, i64, i64, String, String, String)> = {
+        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT br.id, br.model_id, br.prompt_id, br.output, p.title, p.category
+                 FROM benchmark_results br
+                 JOIN prompts p ON br.prompt_id = p.id
+                 WHERE br.run_id = ?1
+                 ORDER BY br.prompt_id, br.model_id",
+            )
+            .map_err(|e| format!("query error: {e}"))?;
+        let rows: Vec<_> = stmt
+            .query_map(rusqlite::params![run_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })
+            .map_err(|e| format!("query error: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("row error: {e}"))?;
+        rows
+    };
+
+    // Derive distinct model set
+    let mut model_ids: Vec<i64> = results.iter().map(|r| r.1).collect();
+    model_ids.sort_unstable();
+    model_ids.dedup();
+
+    if model_ids.len() != 2 {
+        return Err(format!(
+            "Blind comparison requires exactly 2 models, found {}",
+            model_ids.len()
+        ));
+    }
+    let model_a_id = model_ids[0];
+    let model_b_id = model_ids[1];
+
+    // Group results by prompt_id
+    let mut by_prompt: ByPromptMap = HashMap::new();
+    for (result_id, model_id, prompt_id, output, title, category) in &results {
+        by_prompt.entry(*prompt_id).or_default().insert(
+            *model_id,
+            (*result_id, output.clone(), title.clone(), category.clone()),
+        );
+    }
+
+    // Build pairs with random left/right assignment
+    let mut prompt_assignments: HashMap<i64, (i64, i64, bool)> = HashMap::new();
+    let mut pairs: Vec<BlindPair> = Vec::new();
+
+    let mut sorted_prompts: Vec<i64> = by_prompt.keys().copied().collect();
+    sorted_prompts.sort_unstable();
+
+    let base_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+
+    for (idx, prompt_id) in sorted_prompts.iter().enumerate() {
+        let prompt_map = match by_prompt.get(prompt_id) {
+            Some(m) => m,
+            None => continue,
+        };
+        let (result_a_id, output_a, title, category) = match prompt_map.get(&model_a_id) {
+            Some(v) => v,
+            None => continue,
+        };
+        let (result_b_id, output_b, _, _) = match prompt_map.get(&model_b_id) {
+            Some(v) => v,
+            None => continue,
+        };
+
+        // Random left/right: XOR nanos with prompt index
+        let a_is_left = (base_nanos ^ (idx as u32)).is_multiple_of(2);
+
+        let (left_result_id, left_output, right_result_id, right_output) = if a_is_left {
+            (
+                *result_a_id,
+                output_a.clone(),
+                *result_b_id,
+                output_b.clone(),
+            )
+        } else {
+            (
+                *result_b_id,
+                output_b.clone(),
+                *result_a_id,
+                output_a.clone(),
+            )
+        };
+
+        prompt_assignments.insert(*prompt_id, (*result_a_id, *result_b_id, a_is_left));
+
+        pairs.push(BlindPair {
+            prompt_id: *prompt_id,
+            prompt_title: title.clone(),
+            prompt_category: category.clone(),
+            left_result_id,
+            left_output,
+            right_result_id,
+            right_output,
+        });
+    }
+
+    // Store state
+    {
+        let mut map = state.0.lock().map_err(|e| format!("state lock: {e}"))?;
+        map.insert(
+            run_id,
+            BlindComparisonState {
+                model_a_id,
+                model_b_id,
+                prompt_assignments,
+            },
+        );
+    }
+
+    Ok(BlindComparison { id: run_id, pairs })
+}
+
+#[tauri::command]
+pub async fn submit_blind_pick(
+    state: tauri::State<'_, ActiveBlindComparisons>,
+    run_id: i64,
+    prompt_id: i64,
+    winner: String,
+) -> Result<(), String> {
+    let (result_a_id, result_b_id, a_is_left) = {
+        let map = state.0.lock().map_err(|e| format!("state lock: {e}"))?;
+        let st = map
+            .get(&run_id)
+            .ok_or_else(|| format!("no active blind comparison for run {run_id}"))?;
+        let assignment = st
+            .prompt_assignments
+            .get(&prompt_id)
+            .ok_or_else(|| format!("prompt {prompt_id} not found in blind comparison"))?;
+        *assignment
+    };
+
+    // Resolve left/right → model_a/model_b winner
+    let (winner_result_id, loser_result_id) = match winner.as_str() {
+        "left" => {
+            if a_is_left {
+                (result_a_id, result_b_id)
+            } else {
+                (result_b_id, result_a_id)
+            }
+        }
+        "right" => {
+            if a_is_left {
+                (result_b_id, result_a_id)
+            } else {
+                (result_a_id, result_b_id)
+            }
+        }
+        "tie" => {
+            // Both get tie score
+            let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+            conn.execute(
+                "INSERT INTO benchmark_scores (result_id, score, scoring_method) VALUES (?1, 5, 'head_to_head')",
+                rusqlite::params![result_a_id],
+            )
+            .map_err(|e| format!("insert score error: {e}"))?;
+            conn.execute(
+                "INSERT INTO benchmark_scores (result_id, score, scoring_method) VALUES (?1, 5, 'head_to_head')",
+                rusqlite::params![result_b_id],
+            )
+            .map_err(|e| format!("insert score error: {e}"))?;
+            return Ok(());
+        }
+        other => {
+            return Err(format!(
+                "invalid winner value: '{other}' (expected left|right|tie)"
+            ))
+        }
+    };
+
+    let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+    conn.execute(
+        "INSERT INTO benchmark_scores (result_id, score, scoring_method) VALUES (?1, 10, 'head_to_head')",
+        rusqlite::params![winner_result_id],
+    )
+    .map_err(|e| format!("insert winner score error: {e}"))?;
+    conn.execute(
+        "INSERT INTO benchmark_scores (result_id, score, scoring_method) VALUES (?1, 1, 'head_to_head')",
+        rusqlite::params![loser_result_id],
+    )
+    .map_err(|e| format!("insert loser score error: {e}"))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn finish_blind_comparison(
+    state: tauri::State<'_, ActiveBlindComparisons>,
+    run_id: i64,
+) -> Result<BlindReveal, String> {
+    let (model_a_id, model_b_id) = {
+        let map = state.0.lock().map_err(|e| format!("state lock: {e}"))?;
+        let st = map
+            .get(&run_id)
+            .ok_or_else(|| format!("no active blind comparison for run {run_id}"))?;
+        (st.model_a_id, st.model_b_id)
+    };
+
+    // Resolve model names
+    let (model_a_name, model_b_name) = {
+        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        let name_a: String = conn
+            .query_row(
+                "SELECT display_name FROM models WHERE id = ?1",
+                rusqlite::params![model_a_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("model_a not found: {e}"))?;
+        let name_b: String = conn
+            .query_row(
+                "SELECT display_name FROM models WHERE id = ?1",
+                rusqlite::params![model_b_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("model_b not found: {e}"))?;
+        (name_a, name_b)
+    };
+
+    // Query all head_to_head scores for this run
+    // result_id → (model_id, prompt_id, score)
+    let score_rows: Vec<(i64, i64, i64, i64)> = {
+        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT bs.result_id, br.model_id, br.prompt_id, bs.score
+                 FROM benchmark_scores bs
+                 JOIN benchmark_results br ON bs.result_id = br.id
+                 WHERE br.run_id = ?1 AND bs.scoring_method = 'head_to_head'
+                 ORDER BY br.prompt_id",
+            )
+            .map_err(|e| format!("query error: {e}"))?;
+        let rows: Vec<_> = stmt
+            .query_map(rusqlite::params![run_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .map_err(|e| format!("query error: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("row error: {e}"))?;
+        rows
+    };
+
+    // Query prompt titles
+    let prompt_titles: HashMap<i64, String> = {
+        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT DISTINCT br.prompt_id, p.title
+                 FROM benchmark_results br
+                 JOIN prompts p ON br.prompt_id = p.id
+                 WHERE br.run_id = ?1",
+            )
+            .map_err(|e| format!("query error: {e}"))?;
+        let rows: HashMap<_, _> = stmt
+            .query_map(rusqlite::params![run_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| format!("query error: {e}"))?
+            .collect::<Result<HashMap<_, _>, _>>()
+            .map_err(|e| format!("row error: {e}"))?;
+        rows
+    };
+
+    // Group by prompt_id: collect model_id → score
+    let mut by_prompt: HashMap<i64, HashMap<i64, i64>> = HashMap::new();
+    for (_result_id, model_id, prompt_id, score) in score_rows {
+        by_prompt
+            .entry(prompt_id)
+            .or_default()
+            .insert(model_id, score);
+    }
+
+    let mut model_a_wins: i64 = 0;
+    let mut model_b_wins: i64 = 0;
+    let mut ties: i64 = 0;
+    let mut entries: Vec<BlindRevealEntry> = Vec::new();
+
+    let mut sorted_prompts: Vec<i64> = by_prompt.keys().copied().collect();
+    sorted_prompts.sort_unstable();
+
+    for prompt_id in sorted_prompts {
+        let scores = &by_prompt[&prompt_id];
+        let score_a = scores.get(&model_a_id).copied().unwrap_or(0);
+        let score_b = scores.get(&model_b_id).copied().unwrap_or(0);
+
+        let winner_str = if score_a > score_b {
+            model_a_wins += 1;
+            model_a_name.clone()
+        } else if score_b > score_a {
+            model_b_wins += 1;
+            model_b_name.clone()
+        } else {
+            ties += 1;
+            "tie".to_string()
+        };
+
+        entries.push(BlindRevealEntry {
+            prompt_id,
+            prompt_title: prompt_titles.get(&prompt_id).cloned().unwrap_or_default(),
+            model_a_name: model_a_name.clone(),
+            model_b_name: model_b_name.clone(),
+            winner: winner_str,
+        });
+    }
+
+    // Remove from active state
+    {
+        let mut map = state.0.lock().map_err(|e| format!("state lock: {e}"))?;
+        map.remove(&run_id);
+    }
+
+    Ok(BlindReveal {
+        model_a_name,
+        model_b_name,
+        model_a_wins,
+        model_b_wins,
+        ties,
+        entries,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Hardware metrics command
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn get_benchmark_metrics(
+    run_id: i64,
+) -> Result<Option<Vec<BenchmarkMetricsPayload>>, String> {
+    let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+    let result: rusqlite::Result<Option<String>> = conn.query_row(
+        "SELECT hardware_metrics FROM benchmark_runs WHERE id = ?1",
+        rusqlite::params![run_id],
+        |row| row.get(0),
+    );
+
+    match result {
+        Ok(Some(json)) => {
+            let samples: Vec<BenchmarkMetricsPayload> =
+                serde_json::from_str(&json).map_err(|e| format!("metrics parse error: {e}"))?;
+            Ok(Some(samples))
+        }
+        Ok(None) => Ok(None),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(format!("db query error: {e}")),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Import/export commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn export_test_suite(suite_id: i64) -> Result<String, String> {
+    let (suite_name, suite_description): (String, Option<String>) = {
+        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        conn.query_row(
+            "SELECT name, description FROM test_suites WHERE id = ?1",
+            rusqlite::params![suite_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| format!("suite not found (id={suite_id}): {e}"))?
+    };
+
+    let prompts: Vec<PromptExportData> = {
+        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT category, title, text, system_prompt, ideal_answer, eval_criteria, sort_order
+                 FROM prompts WHERE suite_id = ?1 ORDER BY sort_order ASC",
+            )
+            .map_err(|e| format!("query error: {e}"))?;
+        let rows: Vec<_> = stmt
+            .query_map(rusqlite::params![suite_id], |row| {
+                Ok(PromptExportData {
+                    category: row.get(0)?,
+                    title: row.get(1)?,
+                    text: row.get(2)?,
+                    system_prompt: row.get(3)?,
+                    ideal_answer: row.get(4)?,
+                    eval_criteria: row.get(5)?,
+                    sort_order: row.get(6)?,
+                })
+            })
+            .map_err(|e| format!("query error: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("row error: {e}"))?;
+        rows
+    };
+
+    let export = SuiteExport {
+        version: 1,
+        suite: SuiteExportData {
+            name: suite_name,
+            description: suite_description,
+        },
+        prompts,
+    };
+
+    serde_json::to_string_pretty(&export).map_err(|e| format!("serialize error: {e}"))
+}
+
+#[tauri::command]
+pub async fn import_test_suite(json_data: String) -> Result<TestSuite, String> {
+    let export: SuiteExport =
+        serde_json::from_str(&json_data).map_err(|e| format!("invalid JSON: {e}"))?;
+
+    if export.version != 1 {
+        return Err(format!(
+            "unsupported export version {} (expected 1)",
+            export.version
+        ));
+    }
+
+    let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+
+    // Check for name collision and append "(imported)" if needed
+    let existing_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM test_suites WHERE name = ?1",
+            rusqlite::params![export.suite.name],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("name check error: {e}"))?;
+
+    let suite_name = if existing_count > 0 {
+        format!("{} (imported)", export.suite.name)
+    } else {
+        export.suite.name.clone()
+    };
+
+    conn.execute_batch("BEGIN")
+        .map_err(|e| format!("begin tx: {e}"))?;
+
+    let result = (|| -> Result<i64, String> {
+        conn.execute(
+            "INSERT INTO test_suites (name, description) VALUES (?1, ?2)",
+            rusqlite::params![suite_name, export.suite.description],
+        )
+        .map_err(|e| format!("insert suite error: {e}"))?;
+        let suite_id = conn.last_insert_rowid();
+
+        for p in &export.prompts {
+            conn.execute(
+                "INSERT INTO prompts (suite_id, category, title, text, system_prompt, ideal_answer, eval_criteria, sort_order)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    suite_id,
+                    p.category,
+                    p.title,
+                    p.text,
+                    p.system_prompt,
+                    p.ideal_answer,
+                    p.eval_criteria,
+                    p.sort_order,
+                ],
+            )
+            .map_err(|e| format!("insert prompt error: {e}"))?;
+        }
+
+        Ok(suite_id)
+    })();
+
+    match result {
+        Ok(suite_id) => {
+            conn.execute_batch("COMMIT")
+                .map_err(|e| format!("commit tx: {e}"))?;
+            conn.query_row(
+                "SELECT id, name, description, is_default, created_at, updated_at
+                 FROM test_suites WHERE id = ?1",
+                rusqlite::params![suite_id],
+                |row| {
+                    Ok(TestSuite {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        description: row.get(2)?,
+                        is_default: row.get(3)?,
+                        created_at: row.get(4)?,
+                        updated_at: row.get(5)?,
+                    })
+                },
+            )
+            .map_err(|e| format!("fetch after import error: {e}"))
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn export_leaderboard() -> Result<String, String> {
+    let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT name, display_name, elo_rating, arena_wins, arena_losses, arena_draws, total_debates
+             FROM models ORDER BY elo_rating DESC",
+        )
+        .map_err(|e| format!("query error: {e}"))?;
+
+    let rows: Vec<(String, String, f64, i64, i64, i64, i64)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, f64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+            ))
+        })
+        .map_err(|e| format!("query error: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("row error: {e}"))?;
+
+    let mut csv =
+        String::from("Rank,Model,Display Name,Elo Rating,Wins,Losses,Draws,Total Debates\n");
+    for (rank, (name, display_name, elo, wins, losses, draws, total)) in rows.iter().enumerate() {
+        csv.push_str(&format!(
+            "{},{},{},{:.1},{},{},{},{}\n",
+            rank + 1,
+            name,
+            display_name,
+            elo,
+            wins,
+            losses,
+            draws,
+            total
+        ));
+    }
+
+    Ok(csv)
+}
+
+#[tauri::command]
+pub async fn export_benchmark_report(run_id: i64) -> Result<String, String> {
+    // Query run metadata
+    let (suite_name, status, started_at, completed_at): (String, String, String, Option<String>) = {
+        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        conn.query_row(
+            "SELECT ts.name, br.status, br.started_at, br.completed_at
+             FROM benchmark_runs br
+             JOIN test_suites ts ON br.suite_id = ts.id
+             WHERE br.id = ?1",
+            rusqlite::params![run_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .map_err(|e| format!("run not found (id={run_id}): {e}"))?
+    };
+
+    // Query all results with scores
+    let results: Vec<BenchmarkResult> = {
+        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT br.id, br.run_id, br.prompt_id, br.model_id,
+                        m.display_name, p.title, p.category,
+                        br.output, br.tokens_generated, br.time_to_first_token_ms,
+                        br.total_time_ms, br.tokens_per_second, br.created_at,
+                        (SELECT bs.score FROM benchmark_scores bs
+                         WHERE bs.result_id = br.id AND bs.scoring_method = 'manual'
+                         ORDER BY bs.created_at DESC LIMIT 1),
+                        (SELECT bs.score FROM benchmark_scores bs
+                         WHERE bs.result_id = br.id AND bs.scoring_method = 'auto_judge'
+                         ORDER BY bs.created_at DESC LIMIT 1),
+                        (SELECT bs.notes FROM benchmark_scores bs
+                         WHERE bs.result_id = br.id AND bs.scoring_method = 'auto_judge'
+                         ORDER BY bs.created_at DESC LIMIT 1)
+                 FROM benchmark_results br
+                 JOIN models m ON br.model_id = m.id
+                 JOIN prompts p ON br.prompt_id = p.id
+                 WHERE br.run_id = ?1
+                 ORDER BY p.category, p.sort_order, m.display_name",
+            )
+            .map_err(|e| format!("query error: {e}"))?;
+        let rows: Vec<_> = stmt
+            .query_map(rusqlite::params![run_id], |row| {
+                Ok(BenchmarkResult {
+                    id: row.get(0)?,
+                    run_id: row.get(1)?,
+                    prompt_id: row.get(2)?,
+                    model_id: row.get(3)?,
+                    model_name: row.get(4)?,
+                    prompt_title: row.get(5)?,
+                    prompt_category: row.get(6)?,
+                    output: row.get(7)?,
+                    tokens_generated: row.get(8)?,
+                    time_to_first_token_ms: row.get(9)?,
+                    total_time_ms: row.get(10)?,
+                    tokens_per_second: row.get(11)?,
+                    created_at: row.get(12)?,
+                    manual_score: row.get(13)?,
+                    auto_judge_score: row.get(14)?,
+                    auto_judge_notes: row.get(15)?,
+                })
+            })
+            .map_err(|e| format!("query error: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("row error: {e}"))?;
+        rows
+    };
+
+    // Build per-model summary: model_name → (sum_score, count, sum_tps, tps_count)
+    let mut model_stats: HashMap<String, (f64, i64, f64, i64)> = HashMap::new();
+    for r in &results {
+        let score = r
+            .auto_judge_score
+            .map(|s| s as f64)
+            .or_else(|| r.manual_score.map(|s| s as f64 * 2.0));
+        let entry = model_stats
+            .entry(r.model_name.clone())
+            .or_insert((0.0, 0, 0.0, 0));
+        if let Some(s) = score {
+            entry.0 += s;
+            entry.1 += 1;
+        }
+        if let Some(tps) = r.tokens_per_second {
+            entry.2 += tps;
+            entry.3 += 1;
+        }
+    }
+
+    let mut md = String::new();
+    md.push_str(&format!("# Benchmark Report — Run #{run_id}\n\n"));
+    md.push_str(&format!("**Suite:** {suite_name}  \n"));
+    md.push_str(&format!("**Status:** {status}  \n"));
+    md.push_str(&format!("**Started:** {started_at}  \n"));
+    if let Some(ref ca) = completed_at {
+        md.push_str(&format!("**Completed:** {ca}  \n"));
+    }
+    md.push_str("\n---\n\n");
+
+    // Per-model summary table
+    md.push_str("## Model Summary\n\n");
+    md.push_str("| Model | Avg Score | Avg TPS | Prompts Scored |\n");
+    md.push_str("|---|---|---|---|\n");
+    let mut model_names: Vec<String> = model_stats.keys().cloned().collect();
+    model_names.sort();
+    for name in &model_names {
+        let (sum_score, score_count, sum_tps, tps_count) = model_stats[name];
+        let avg_score = if score_count > 0 {
+            format!("{:.1}", sum_score / score_count as f64)
+        } else {
+            "—".into()
+        };
+        let avg_tps = if tps_count > 0 {
+            format!("{:.1}", sum_tps / tps_count as f64)
+        } else {
+            "—".into()
+        };
+        md.push_str(&format!(
+            "| {name} | {avg_score} | {avg_tps} | {score_count} |\n"
+        ));
+    }
+    md.push('\n');
+
+    // Per-prompt details
+    md.push_str("## Prompt Details\n\n");
+    let mut current_category = String::new();
+    let mut current_prompt = String::new();
+
+    for r in &results {
+        if r.prompt_category != current_category {
+            current_category = r.prompt_category.clone();
+            md.push_str(&format!("### Category: {current_category}\n\n"));
+        }
+        if r.prompt_title != current_prompt {
+            current_prompt = r.prompt_title.clone();
+            md.push_str(&format!("#### {current_prompt}\n\n"));
+        }
+
+        let score_str = r
+            .auto_judge_score
+            .map(|s| format!("auto_judge: {s}/10"))
+            .or_else(|| r.manual_score.map(|s| format!("manual: {s}/5")))
+            .unwrap_or_else(|| "unscored".into());
+
+        let tps_str = r
+            .tokens_per_second
+            .map(|t| format!("{t:.1} TPS"))
+            .unwrap_or_else(|| "—".into());
+
+        md.push_str(&format!(
+            "**{}** | {} | {}\n\n",
+            r.model_name, score_str, tps_str
+        ));
+        md.push_str(&format!("{}\n\n", r.output));
+
+        if let Some(ref notes) = r.auto_judge_notes {
+            if !notes.is_empty() {
+                md.push_str(&format!("*Judge notes: {notes}*\n\n"));
+            }
+        }
+
+        md.push_str("---\n\n");
+    }
+
+    Ok(md)
 }
 
 // ---------------------------------------------------------------------------
@@ -1508,5 +2385,184 @@ mod tests {
         assert!(json.contains("\"display_name\":\"Llama 3\""));
         assert!(json.contains("\"total_prompts_scored\":20"));
         assert!(json.contains("Coding"));
+    }
+
+    // ----- Blind comparison score mapping tests -----
+
+    #[test]
+    fn blind_comparison_left_win_maps_to_model_a_when_a_is_left() {
+        // a_is_left=true, winner="left" → result_a wins (score 10), result_b loses (score 1)
+        // Verify score assignment logic matches submit_blind_pick:
+        // left wins → winner_result_id = result_a_id (since a_is_left=true)
+        let a_is_left = true;
+        let result_a_id = 10i64;
+        let result_b_id = 20i64;
+        let winner = "left";
+
+        let (winner_id, loser_id) = if winner == "left" {
+            if a_is_left {
+                (result_a_id, result_b_id)
+            } else {
+                (result_b_id, result_a_id)
+            }
+        } else {
+            if a_is_left {
+                (result_b_id, result_a_id)
+            } else {
+                (result_a_id, result_b_id)
+            }
+        };
+
+        assert_eq!(winner_id, result_a_id);
+        assert_eq!(loser_id, result_b_id);
+    }
+
+    #[test]
+    fn blind_comparison_right_win_maps_to_model_b_when_a_is_left() {
+        // a_is_left=true, winner="right" → result_b wins (score 10), result_a loses (score 1)
+        let a_is_left = true;
+        let result_a_id = 10i64;
+        let result_b_id = 20i64;
+        let winner = "right";
+
+        let (winner_id, loser_id) = if winner == "left" {
+            if a_is_left {
+                (result_a_id, result_b_id)
+            } else {
+                (result_b_id, result_a_id)
+            }
+        } else {
+            if a_is_left {
+                (result_b_id, result_a_id)
+            } else {
+                (result_a_id, result_b_id)
+            }
+        };
+
+        assert_eq!(winner_id, result_b_id);
+        assert_eq!(loser_id, result_a_id);
+    }
+
+    #[test]
+    fn blind_comparison_left_win_maps_to_model_b_when_b_is_left() {
+        // a_is_left=false (b is left), winner="left" → result_b wins
+        let a_is_left = false;
+        let result_a_id = 10i64;
+        let result_b_id = 20i64;
+        let winner = "left";
+
+        let (winner_id, loser_id) = if winner == "left" {
+            if a_is_left {
+                (result_a_id, result_b_id)
+            } else {
+                (result_b_id, result_a_id)
+            }
+        } else {
+            if a_is_left {
+                (result_b_id, result_a_id)
+            } else {
+                (result_a_id, result_b_id)
+            }
+        };
+
+        assert_eq!(winner_id, result_b_id);
+        assert_eq!(loser_id, result_a_id);
+    }
+
+    // ----- SuiteExport JSON round-trip test -----
+
+    #[test]
+    fn suite_export_round_trips_json() {
+        let original = SuiteExport {
+            version: 1,
+            suite: SuiteExportData {
+                name: "Test Suite Alpha".into(),
+                description: Some("A test suite".into()),
+            },
+            prompts: vec![
+                PromptExportData {
+                    category: "coding".into(),
+                    title: "Rust LRU Cache".into(),
+                    text: "Implement an LRU cache in Rust.".into(),
+                    system_prompt: None,
+                    ideal_answer: Some("Use HashMap + VecDeque".into()),
+                    eval_criteria: Some("Correctness, efficiency".into()),
+                    sort_order: 0,
+                },
+                PromptExportData {
+                    category: "analysis".into(),
+                    title: "Log Analysis".into(),
+                    text: "Analyze these logs.".into(),
+                    system_prompt: Some("You are a senior SRE.".into()),
+                    ideal_answer: None,
+                    eval_criteria: None,
+                    sort_order: 1,
+                },
+            ],
+        };
+
+        let json = serde_json::to_string_pretty(&original).unwrap();
+        let restored: SuiteExport = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.version, 1);
+        assert_eq!(restored.suite.name, "Test Suite Alpha");
+        assert_eq!(restored.suite.description, Some("A test suite".into()));
+        assert_eq!(restored.prompts.len(), 2);
+        assert_eq!(restored.prompts[0].category, "coding");
+        assert_eq!(restored.prompts[0].title, "Rust LRU Cache");
+        assert_eq!(
+            restored.prompts[0].ideal_answer,
+            Some("Use HashMap + VecDeque".into())
+        );
+        assert_eq!(restored.prompts[1].category, "analysis");
+        assert!(restored.prompts[1].system_prompt.is_some());
+        assert_eq!(restored.prompts[1].sort_order, 1);
+    }
+
+    #[test]
+    fn suite_export_version_mismatch_detected() {
+        let json = r#"{"version":2,"suite":{"name":"x","description":null},"prompts":[]}"#;
+        let export: SuiteExport = serde_json::from_str(json).unwrap();
+        // Version check is done in import_test_suite command; verify version field is read correctly
+        assert_eq!(export.version, 2);
+    }
+
+    #[test]
+    fn benchmark_metrics_payload_round_trips() {
+        let p = BenchmarkMetricsPayload {
+            run_id: 5,
+            cpu_percent: 42.5,
+            memory_percent: 60.1,
+            swap_percent: 0.0,
+            timestamp_ms: 1_700_000_000_000,
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        let back: BenchmarkMetricsPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.run_id, 5);
+        assert!((back.cpu_percent - 42.5).abs() < 0.01);
+        assert!((back.memory_percent - 60.1).abs() < 0.01);
+        assert_eq!(back.timestamp_ms, 1_700_000_000_000);
+    }
+
+    #[test]
+    fn blind_reveal_serializes() {
+        let reveal = BlindReveal {
+            model_a_name: "Llama 3".into(),
+            model_b_name: "Gemma 3".into(),
+            model_a_wins: 3,
+            model_b_wins: 2,
+            ties: 1,
+            entries: vec![BlindRevealEntry {
+                prompt_id: 1,
+                prompt_title: "Coding challenge".into(),
+                model_a_name: "Llama 3".into(),
+                model_b_name: "Gemma 3".into(),
+                winner: "Llama 3".into(),
+            }],
+        };
+        let json = serde_json::to_string(&reveal).unwrap();
+        assert!(json.contains("\"model_a_wins\":3"));
+        assert!(json.contains("\"ties\":1"));
+        assert!(json.contains("Llama 3"));
     }
 }

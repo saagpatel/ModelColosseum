@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { ResponsiveContainer, LineChart, Line, Tooltip } from "recharts";
 import { useAppStore } from "../stores/appStore";
 import { useBenchmarkStore } from "../stores/benchmarkStore";
 import { useBenchmarkEvents } from "../hooks/useBenchmarkEvents";
@@ -8,6 +9,8 @@ import { ScoreAllMode } from "../components/benchmark/ScoreAllMode";
 import { AutoJudgePanel } from "../components/benchmark/AutoJudgePanel";
 import { RunHistory } from "../components/benchmark/RunHistory";
 import { RunComparison } from "../components/benchmark/RunComparison";
+import { BlindCompare } from "../components/benchmark/BlindCompare";
+import { downloadBlob } from "../utils/download";
 import type { TestSuite, Prompt, BenchmarkResult } from "../types";
 
 type PromptCategory =
@@ -77,11 +80,15 @@ function SuitesSidebar({
   selectedId,
   onSelect,
   onNewSuite,
+  onExportSuite,
+  onImportSuite,
 }: {
   suites: TestSuite[];
   selectedId: number | null;
   onSelect: (id: number) => void;
   onNewSuite: () => void;
+  onExportSuite: () => void;
+  onImportSuite: () => void;
 }) {
   return (
     <div className="flex w-64 shrink-0 flex-col border-r border-slate-700 bg-slate-900">
@@ -111,13 +118,27 @@ function SuitesSidebar({
           </button>
         ))}
       </div>
-      <div className="border-t border-slate-700 p-3">
+      <div className="border-t border-slate-700 p-3 space-y-2">
         <button
           onClick={onNewSuite}
           className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-slate-800 py-2 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
         >
           <span className="text-base leading-none">+</span> New Suite
         </button>
+        <div className="flex gap-2">
+          <button
+            onClick={onExportSuite}
+            className="flex-1 rounded-lg bg-slate-800 py-1.5 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
+          >
+            Export
+          </button>
+          <button
+            onClick={onImportSuite}
+            className="flex-1 rounded-lg bg-slate-800 py-1.5 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
+          >
+            Import
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -438,7 +459,7 @@ function ConfigureModal({
 // ─── Running phase ────────────────────────────────────────────────────────────
 
 function RunningOverlay({ runId }: { runId: number }) {
-  const { progress, streamPreview, startedAt } = useBenchmarkStore();
+  const { progress, streamPreview, startedAt, hardwareMetrics } = useBenchmarkStore();
   const previewRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -529,6 +550,48 @@ function RunningOverlay({ runId }: { runId: number }) {
         {etaLabel && (
           <p className="mt-3 text-xs text-slate-500">{etaLabel}</p>
         )}
+
+        {hardwareMetrics.length > 0 && (
+          <div className="mt-4">
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className="text-xs font-medium text-slate-500">System Metrics</span>
+              <div className="flex items-center gap-3">
+                <span className="flex items-center gap-1 text-[10px] text-slate-500">
+                  <span className="inline-block h-2 w-3 rounded-sm bg-amber-500" /> CPU
+                </span>
+                <span className="flex items-center gap-1 text-[10px] text-slate-500">
+                  <span className="inline-block h-2 w-3 rounded-sm bg-blue-400" /> Mem
+                </span>
+              </div>
+            </div>
+            <ResponsiveContainer width="100%" height={80}>
+              <LineChart data={hardwareMetrics}>
+                <Tooltip
+                  contentStyle={{ background: "#1e293b", border: "1px solid #334155", fontSize: 11 }}
+                  formatter={(value: number, name: string) => [`${value.toFixed(1)}%`, name]}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="cpu_percent"
+                  name="CPU"
+                  stroke="#f59e0b"
+                  strokeWidth={1.5}
+                  dot={false}
+                  isAnimationActive={false}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="memory_percent"
+                  name="Memory"
+                  stroke="#60a5fa"
+                  strokeWidth={1.5}
+                  dot={false}
+                  isAnimationActive={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -565,6 +628,8 @@ export function Benchmark() {
   const [showRunHistory, setShowRunHistory] = useState(false);
   const [compareRuns, setCompareRuns] = useState<[number, number] | null>(null);
   const [showAutoJudge, setShowAutoJudge] = useState(false);
+  const [showBlindCompare, setShowBlindCompare] = useState(false);
+  const importFileRef = useRef<HTMLInputElement>(null);
 
   useBenchmarkEvents(runId);
 
@@ -726,6 +791,50 @@ export function Benchmark() {
     }
   };
 
+  const handleExportSuite = async () => {
+    if (selectedSuiteId === null) return;
+    try {
+      const json = await invoke<string>("export_test_suite", { suiteId: selectedSuiteId });
+      const suiteName = suites.find((s) => s.id === selectedSuiteId)?.name ?? "suite";
+      downloadBlob(json, `${suiteName}.json`, "application/json");
+    } catch (err) {
+      console.error("export_test_suite error:", err);
+    }
+  };
+
+  const handleImportSuite = () => {
+    importFileRef.current?.click();
+  };
+
+  const handleImportFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const jsonData = ev.target?.result as string;
+      try {
+        await invoke("import_test_suite", { jsonData });
+        const result = await invoke<TestSuite[]>("list_test_suites");
+        setSuites(result);
+      } catch (err) {
+        console.error("import_test_suite error:", err);
+      }
+    };
+    reader.readAsText(file);
+    // Reset so same file can be re-imported
+    e.target.value = "";
+  };
+
+  const handleExportReport = async () => {
+    if (viewingRunId === null) return;
+    try {
+      const md = await invoke<string>("export_benchmark_report", { runId: viewingRunId });
+      downloadBlob(md, `benchmark-report-${viewingRunId}.md`, "text/markdown");
+    } catch (err) {
+      console.error("export_benchmark_report error:", err);
+    }
+  };
+
   // Group prompts by category
   const byCategory: Record<string, Prompt[]> = {};
   for (const p of prompts) {
@@ -802,6 +911,14 @@ export function Benchmark() {
     // Main results grid
     return (
       <div className="flex h-full flex-col bg-slate-950">
+        {/* Blind compare overlay */}
+        {showBlindCompare && viewingRunId !== null && (
+          <BlindCompare
+            runId={viewingRunId}
+            onClose={() => setShowBlindCompare(false)}
+          />
+        )}
+
         {/* Auto-judge overlay */}
         {showAutoJudge && viewingRunId !== null && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
@@ -867,10 +984,23 @@ export function Benchmark() {
               {blindMode ? "Blind ON" : "Blind Mode"}
             </button>
             <button
+              onClick={() => setShowBlindCompare(true)}
+              disabled={new Set(results.map((r) => r.model_id)).size !== 2}
+              className="h-8 rounded-lg bg-slate-800 px-3 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
+            >
+              Blind Compare
+            </button>
+            <button
               onClick={() => setShowAutoJudge(true)}
               className="h-8 rounded-lg bg-slate-800 px-3 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
             >
               Auto-Judge
+            </button>
+            <button
+              onClick={() => void handleExportReport()}
+              className="h-8 rounded-lg bg-slate-800 px-3 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
+            >
+              Export Report
             </button>
             <button
               onClick={enterScoreAllMode}
@@ -976,12 +1106,23 @@ export function Benchmark() {
 
       {/* Body */}
       <div className="flex min-h-0 flex-1">
+        {/* Hidden file input for suite import */}
+        <input
+          ref={importFileRef}
+          type="file"
+          accept=".json"
+          className="hidden"
+          onChange={(e) => void handleImportFileChange(e)}
+        />
+
         {/* Sidebar */}
         <SuitesSidebar
           suites={suites}
           selectedId={selectedSuiteId}
           onSelect={handleSelectSuite}
           onNewSuite={() => setShowNewSuiteInput(true)}
+          onExportSuite={() => void handleExportSuite()}
+          onImportSuite={handleImportSuite}
         />
 
         {/* New suite input (shown inline in sidebar area via absolute, or inline below) */}

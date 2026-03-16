@@ -11,6 +11,7 @@ interface DebatePanelProps {
   isWaiting: boolean;
   isComplete: boolean;
   eloDelta?: number;
+  winner?: "a" | "b";
 }
 
 export function DebatePanel({
@@ -22,15 +23,17 @@ export function DebatePanel({
   isWaiting,
   isComplete,
   eloDelta,
+  winner,
 }: DebatePanelProps) {
   const isPro = side === "a";
   const label = isPro ? "PRO" : "CON";
   const badgeColor = isPro
     ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
     : "bg-red-500/20 text-red-400 border-red-500/30";
+  const isWinner = winner === side;
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col rounded-xl border border-slate-800 bg-slate-900/50">
+    <div className={`flex min-w-0 flex-1 flex-col rounded-xl border border-slate-800 bg-slate-900/50 ${isWinner ? "animate-winner-glow" : ""}`}>
       {/* Header */}
       <div className="flex items-center justify-between border-b border-slate-800 px-5 py-3">
         <div className="flex items-center gap-3">
@@ -41,7 +44,7 @@ export function DebatePanel({
         </div>
         <div className="flex items-center gap-2">
           {eloDelta !== undefined && (
-            <span className={`text-xs font-medium ${
+            <span key={eloDelta} className={`animate-elo-pop text-xs font-medium ${
               eloDelta > 0
                 ? "text-emerald-400"
                 : eloDelta < 0
@@ -58,7 +61,7 @@ export function DebatePanel({
       </div>
 
       {/* Content */}
-      <div className="relative flex-1 overflow-y-auto px-5 py-4" style={{ minHeight: "300px" }}>
+      <div className="relative flex-1 scroll-smooth overflow-y-auto px-5 py-4" style={{ minHeight: "300px" }}>
         {isWaiting && !isStreaming && !isComplete && (
           <div className="flex h-full items-center justify-center">
             <span className="animate-pulse text-sm text-slate-500">Waiting for opponent...</span>

@@ -244,9 +244,7 @@ async fn stream_and_collect(
 
     let generation_time_ms = start.elapsed().as_millis() as u64;
     let tps = match (eval_count, eval_duration) {
-        (Some(count), Some(dur)) if dur > 0 => {
-            Some(count as f64 / (dur as f64 / 1_000_000_000.0))
-        }
+        (Some(count), Some(dur)) if dur > 0 => Some(count as f64 / (dur as f64 / 1_000_000_000.0)),
         _ => None,
     };
 
@@ -383,10 +381,19 @@ async fn run_debate_loop(
 
         let system_a = match format.as_str() {
             "formal" => prompts::build_formal_prompt(
-                "pro", &topic, formal_phase_for_round(round), word_limit, &history, "model_a",
+                "pro",
+                &topic,
+                formal_phase_for_round(round),
+                word_limit,
+                &history,
+                "model_a",
             ),
             "socratic" => prompts::build_socratic_prompt(
-                "pro", &topic, round, word_limit, &history,
+                "pro",
+                &topic,
+                round,
+                word_limit,
+                &history,
                 socratic_is_questioner(round, total_rounds, "model_a"),
             ),
             _ => prompts::build_arena_system_prompt(
@@ -395,10 +402,19 @@ async fn run_debate_loop(
         };
         let system_b = match format.as_str() {
             "formal" => prompts::build_formal_prompt(
-                "con", &topic, formal_phase_for_round(round), word_limit, &history, "model_b",
+                "con",
+                &topic,
+                formal_phase_for_round(round),
+                word_limit,
+                &history,
+                "model_b",
             ),
             "socratic" => prompts::build_socratic_prompt(
-                "con", &topic, round, word_limit, &history,
+                "con",
+                &topic,
+                round,
+                word_limit,
+                &history,
                 socratic_is_questioner(round, total_rounds, "model_b"),
             ),
             _ => prompts::build_arena_system_prompt(
@@ -440,24 +456,58 @@ async fn run_debate_loop(
         };
 
         if concurrent {
-            let rx_a = or_abort!(app, active_map, debate_id, ollama::generate_stream(req_a).await);
-            let rx_b = or_abort!(app, active_map, debate_id, ollama::generate_stream(req_b).await);
+            let rx_a = or_abort!(
+                app,
+                active_map,
+                debate_id,
+                ollama::generate_stream(req_a).await
+            );
+            let rx_b = or_abort!(
+                app,
+                active_map,
+                debate_id,
+                ollama::generate_stream(req_b).await
+            );
 
             let start_a = Instant::now();
             let start_b = Instant::now();
 
             let (result_a, result_b) = tokio::join!(
-                stream_and_collect(&app, "debate:stream:a", debate_id, round, rx_a, &token, start_a),
-                stream_and_collect(&app, "debate:stream:b", debate_id, round, rx_b, &token, start_b),
+                stream_and_collect(
+                    &app,
+                    "debate:stream:a",
+                    debate_id,
+                    round,
+                    rx_a,
+                    &token,
+                    start_a
+                ),
+                stream_and_collect(
+                    &app,
+                    "debate:stream:b",
+                    debate_id,
+                    round,
+                    rx_b,
+                    &token,
+                    start_b
+                ),
             );
 
             let (content_a, metrics_a) = or_abort!(app, active_map, debate_id, result_a);
             let (content_b, metrics_b) = or_abort!(app, active_map, debate_id, result_b);
 
-            or_abort!(app, active_map, debate_id,
-                save_round(debate_id, round, "model_a", phase, &content_a, &metrics_a));
-            or_abort!(app, active_map, debate_id,
-                save_round(debate_id, round, "model_b", phase, &content_b, &metrics_b));
+            or_abort!(
+                app,
+                active_map,
+                debate_id,
+                save_round(debate_id, round, "model_a", phase, &content_a, &metrics_a)
+            );
+            or_abort!(
+                app,
+                active_map,
+                debate_id,
+                save_round(debate_id, round, "model_b", phase, &content_b, &metrics_b)
+            );
 
             let _ = app.emit(
                 "debate:round_complete",
@@ -471,20 +521,64 @@ async fn run_debate_loop(
         } else {
             // Sequential: stream A fully, then B
             let start_a = Instant::now();
-            let rx_a = or_abort!(app, active_map, debate_id, ollama::generate_stream(req_a).await);
-            let (content_a, metrics_a) = or_abort!(app, active_map, debate_id,
-                stream_and_collect(&app, "debate:stream:a", debate_id, round, rx_a, &token, start_a).await);
+            let rx_a = or_abort!(
+                app,
+                active_map,
+                debate_id,
+                ollama::generate_stream(req_a).await
+            );
+            let (content_a, metrics_a) = or_abort!(
+                app,
+                active_map,
+                debate_id,
+                stream_and_collect(
+                    &app,
+                    "debate:stream:a",
+                    debate_id,
+                    round,
+                    rx_a,
+                    &token,
+                    start_a
+                )
+                .await
+            );
 
-            or_abort!(app, active_map, debate_id,
-                save_round(debate_id, round, "model_a", phase, &content_a, &metrics_a));
+            or_abort!(
+                app,
+                active_map,
+                debate_id,
+                save_round(debate_id, round, "model_a", phase, &content_a, &metrics_a)
+            );
 
             let start_b = Instant::now();
-            let rx_b = or_abort!(app, active_map, debate_id, ollama::generate_stream(req_b).await);
-            let (content_b, metrics_b) = or_abort!(app, active_map, debate_id,
-                stream_and_collect(&app, "debate:stream:b", debate_id, round, rx_b, &token, start_b).await);
+            let rx_b = or_abort!(
+                app,
+                active_map,
+                debate_id,
+                ollama::generate_stream(req_b).await
+            );
+            let (content_b, metrics_b) = or_abort!(
+                app,
+                active_map,
+                debate_id,
+                stream_and_collect(
+                    &app,
+                    "debate:stream:b",
+                    debate_id,
+                    round,
+                    rx_b,
+                    &token,
+                    start_b
+                )
+                .await
+            );
 
-            or_abort!(app, active_map, debate_id,
-                save_round(debate_id, round, "model_b", phase, &content_b, &metrics_b));
+            or_abort!(
+                app,
+                active_map,
+                debate_id,
+                save_round(debate_id, round, "model_b", phase, &content_b, &metrics_b)
+            );
 
             let _ = app.emit(
                 "debate:round_complete",
@@ -514,10 +608,12 @@ async fn run_debate_loop(
                 return;
             }
         };
-        let _ = conn.execute(
+        if let Err(e) = conn.execute(
             "UPDATE debates SET status = 'voting', completed_at = datetime('now') WHERE id = ?1",
             rusqlite::params![debate_id],
-        );
+        ) {
+            eprintln!("failed to update debate {debate_id} status to voting: {e}");
+        }
     }
 
     cleanup_token(&active_map, debate_id);
@@ -587,10 +683,7 @@ pub async fn start_debate(
     // Create cancellation token
     let cancel_token = CancellationToken::new();
     {
-        let mut map = state
-            .0
-            .lock()
-            .map_err(|e| format!("state lock: {e}"))?;
+        let mut map = state.0.lock().map_err(|e| format!("state lock: {e}"))?;
         map.insert(debate_id, cancel_token.clone());
     }
 
@@ -713,13 +806,8 @@ pub async fn vote_debate(debate_id: i64, winner: String) -> Result<VoteResult, S
         _ => crate::elo::Outcome::Draw,
     };
 
-    let (new_a, new_b, k_a, k_b) = crate::elo::update_ratings(
-        rating_a,
-        rating_b,
-        outcome,
-        total_a as u32,
-        total_b as u32,
-    );
+    let (new_a, new_b, k_a, k_b) =
+        crate::elo::update_ratings(rating_a, rating_b, outcome, total_a as u32, total_b as u32);
 
     // Win/loss/draw increments for each model
     let (a_wins, a_losses, a_draws, b_wins, b_losses, b_draws) = match winner.as_str() {
@@ -822,10 +910,16 @@ pub async fn start_sparring(
 ) -> Result<i64, String> {
     // Validate inputs
     if !["pro", "con"].contains(&human_side.as_str()) {
-        return Err(format!("Invalid human_side '{}': must be 'pro' or 'con'", human_side));
+        return Err(format!(
+            "Invalid human_side '{}': must be 'pro' or 'con'",
+            human_side
+        ));
     }
     if !["casual", "competitive", "expert"].contains(&difficulty.as_str()) {
-        return Err(format!("Invalid difficulty '{}': must be 'casual', 'competitive', or 'expert'", difficulty));
+        return Err(format!(
+            "Invalid difficulty '{}': must be 'casual', 'competitive', or 'expert'",
+            difficulty
+        ));
     }
 
     // Fetch model name from DB
@@ -856,22 +950,28 @@ pub async fn start_sparring(
     let word_limits = default_word_limits();
     {
         let mut map = state.0.lock().map_err(|e| format!("state lock: {e}"))?;
-        map.insert(debate_id, SparringState {
-            cancel_token: cancel_token.clone(),
-            difficulty: difficulty.clone(),
-            model_name,
-            topic: topic.clone(),
-            human_side: human_side.clone(),
-            word_limits,
-        });
+        map.insert(
+            debate_id,
+            SparringState {
+                cancel_token: cancel_token.clone(),
+                difficulty: difficulty.clone(),
+                model_name,
+                topic: topic.clone(),
+                human_side: human_side.clone(),
+                word_limits,
+            },
+        );
     }
 
     // Emit started event
-    let _ = app.emit("sparring:started", SparringStartedPayload {
-        debate_id,
-        first_phase: "opening".into(),
-        word_limit: word_limits[0],
-    });
+    let _ = app.emit(
+        "sparring:started",
+        SparringStartedPayload {
+            debate_id,
+            first_phase: "opening".into(),
+            word_limit: word_limits[0],
+        },
+    );
 
     Ok(debate_id)
 }
@@ -886,7 +986,9 @@ pub async fn submit_human_argument(
     // Read state
     let (cancel_token, difficulty, model_name, topic, human_side, word_limits) = {
         let map = state.0.lock().map_err(|e| format!("state lock: {e}"))?;
-        let s = map.get(&debate_id).ok_or_else(|| format!("No active sparring session for debate {debate_id}"))?;
+        let s = map
+            .get(&debate_id)
+            .ok_or_else(|| format!("No active sparring session for debate {debate_id}"))?;
         (
             s.cancel_token.clone(),
             s.difficulty.clone(),
@@ -923,12 +1025,19 @@ pub async fn submit_human_argument(
     let phase = sparring_phase_for_round(human_round);
 
     // Save human round with zero metrics
-    save_round(debate_id, human_round, "human", phase, &content, &RoundMetrics {
-        tokens_generated: None,
-        time_to_first_token_ms: None,
-        generation_time_ms: 0,
-        tokens_per_second: None,
-    })?;
+    save_round(
+        debate_id,
+        human_round,
+        "human",
+        phase,
+        &content,
+        &RoundMetrics {
+            tokens_generated: None,
+            time_to_first_token_ms: None,
+            generation_time_ms: 0,
+            tokens_per_second: None,
+        },
+    )?;
 
     // Spawn AI response
     let active_map = Arc::clone(&state.0);
@@ -940,10 +1049,13 @@ pub async fn submit_human_argument(
         let history = match load_history(debate_id) {
             Ok(h) => h,
             Err(e) => {
-                let _ = app.emit("sparring:error", SparringErrorPayload {
-                    debate_id,
-                    message: e,
-                });
+                let _ = app.emit(
+                    "sparring:error",
+                    SparringErrorPayload {
+                        debate_id,
+                        message: e,
+                    },
+                );
                 return;
             }
         };
@@ -953,7 +1065,12 @@ pub async fn submit_human_argument(
 
         // Build prompt
         let system_prompt = prompts::build_sparring_system_prompt(
-            &difficulty, ai_side, &topic, ai_phase, ai_word_limit, &history,
+            &difficulty,
+            ai_side,
+            &topic,
+            ai_phase,
+            ai_word_limit,
+            &history,
         );
 
         let req = ollama::GenerateRequest {
@@ -968,26 +1085,46 @@ pub async fn submit_human_argument(
         let rx = match ollama::generate_stream(req).await {
             Ok(rx) => rx,
             Err(e) => {
-                let _ = app.emit("sparring:error", SparringErrorPayload {
-                    debate_id,
-                    message: e,
-                });
+                let _ = app.emit(
+                    "sparring:error",
+                    SparringErrorPayload {
+                        debate_id,
+                        message: e,
+                    },
+                );
                 return;
             }
         };
 
         let start = Instant::now();
         let result = stream_and_collect(
-            &app, "sparring:stream", debate_id, ai_round, rx, &cancel_token, start,
-        ).await;
+            &app,
+            "sparring:stream",
+            debate_id,
+            ai_round,
+            rx,
+            &cancel_token,
+            start,
+        )
+        .await;
 
         match result {
             Ok((ai_content, metrics)) => {
-                if let Err(e) = save_round(debate_id, ai_round, "model_a", ai_phase, &ai_content, &metrics) {
-                    let _ = app.emit("sparring:error", SparringErrorPayload {
-                        debate_id,
-                        message: e,
-                    });
+                if let Err(e) = save_round(
+                    debate_id,
+                    ai_round,
+                    "model_a",
+                    ai_phase,
+                    &ai_content,
+                    &metrics,
+                ) {
+                    let _ = app.emit(
+                        "sparring:error",
+                        SparringErrorPayload {
+                            debate_id,
+                            message: e,
+                        },
+                    );
                     return;
                 }
 
@@ -1004,15 +1141,18 @@ pub async fn submit_human_argument(
                     )
                 };
 
-                let _ = app.emit("sparring:round_complete", SparringRoundCompletePayload {
-                    debate_id,
-                    round: ai_round,
-                    phase: ai_phase.to_string(),
-                    ai_content,
-                    next_phase,
-                    next_word_limit,
-                    is_complete,
-                });
+                let _ = app.emit(
+                    "sparring:round_complete",
+                    SparringRoundCompletePayload {
+                        debate_id,
+                        round: ai_round,
+                        phase: ai_phase.to_string(),
+                        ai_content,
+                        next_phase,
+                        next_word_limit,
+                        is_complete,
+                    },
+                );
 
                 if is_complete {
                     // Update DB status
@@ -1020,23 +1160,31 @@ pub async fn submit_human_argument(
                         let conn = match db::get_db().lock() {
                             Ok(c) => c,
                             Err(e) => {
-                                let _ = app.emit("sparring:error", SparringErrorPayload {
-                                    debate_id,
-                                    message: format!("db lock: {e}"),
-                                });
+                                let _ = app.emit(
+                                    "sparring:error",
+                                    SparringErrorPayload {
+                                        debate_id,
+                                        message: format!("db lock: {e}"),
+                                    },
+                                );
                                 return;
                             }
                         };
-                        let _ = conn.execute(
+                        if let Err(e) = conn.execute(
                             "UPDATE debates SET status = 'completed', completed_at = datetime('now') WHERE id = ?1",
                             rusqlite::params![debate_id],
-                        );
+                        ) {
+                            eprintln!("failed to update sparring {debate_id} status to completed: {e}");
+                        }
                     }
                     cleanup_sparring(&active_map, debate_id);
-                    let _ = app.emit("sparring:complete", DebateCompletePayload {
-                        debate_id,
-                        total_rounds: 8,
-                    });
+                    let _ = app.emit(
+                        "sparring:complete",
+                        DebateCompletePayload {
+                            debate_id,
+                            total_rounds: 8,
+                        },
+                    );
                 }
             }
             Err(e) if e == "cancelled" => {
@@ -1047,10 +1195,13 @@ pub async fn submit_human_argument(
             Err(e) => {
                 let _ = abort_debate_in_db(debate_id);
                 cleanup_sparring(&active_map, debate_id);
-                let _ = app.emit("sparring:error", SparringErrorPayload {
-                    debate_id,
-                    message: e,
-                });
+                let _ = app.emit(
+                    "sparring:error",
+                    SparringErrorPayload {
+                        debate_id,
+                        message: e,
+                    },
+                );
             }
         }
     });
@@ -1140,10 +1291,7 @@ fn extract_score_from_text(text: &str, field: &str) -> Option<i32> {
 }
 
 fn extract_text_field(text: &str, field: &str) -> String {
-    let patterns = [
-        format!("\"{field}\": \""),
-        format!("\"{field}\":\""),
-    ];
+    let patterns = [format!("\"{field}\": \""), format!("\"{field}\":\"")];
     for pat in &patterns {
         if let Some(idx) = text.find(pat.as_str()) {
             let rest = &text[idx + pat.len()..];
@@ -1197,7 +1345,11 @@ fn parse_scorecard_response(response: &str) -> Option<SparringScorecard> {
         let get_score = |obj: Option<&serde_json::Value>, key: &str| -> Option<i32> {
             obj?.get(key)?.as_i64().and_then(|n| {
                 let n = n as i32;
-                if (1..=10).contains(&n) { Some(n) } else { None }
+                if (1..=10).contains(&n) {
+                    Some(n)
+                } else {
+                    None
+                }
             })
         };
 
@@ -1244,7 +1396,11 @@ fn parse_scorecard_response(response: &str) -> Option<SparringScorecard> {
     // For AI persuasiveness, search after the "ai" section marker
     let ai_section_start = cleaned.find("\"ai\"").unwrap_or(0);
     let human_section = &cleaned[..ai_section_start.max(cleaned.len() / 2)];
-    let ai_section = if ai_section_start > 0 { &cleaned[ai_section_start..] } else { cleaned };
+    let ai_section = if ai_section_start > 0 {
+        &cleaned[ai_section_start..]
+    } else {
+        cleaned
+    };
 
     let h_persuasiveness = extract_score_from_text(human_section, "persuasiveness")
         .or(extract_score_from_text(cleaned, "persuasiveness"));
@@ -1257,8 +1413,14 @@ fn parse_scorecard_response(response: &str) -> Option<SparringScorecard> {
     let a_rebuttal = extract_score_from_text(ai_section, "rebuttal");
 
     let scores = [
-        h_persuasiveness, h_evidence, h_coherence, h_rebuttal,
-        a_persuasiveness, a_evidence, a_coherence, a_rebuttal,
+        h_persuasiveness,
+        h_evidence,
+        h_coherence,
+        h_rebuttal,
+        a_persuasiveness,
+        a_evidence,
+        a_coherence,
+        a_rebuttal,
     ];
     let found = scores.iter().filter(|s| s.is_some()).count();
 
@@ -1300,13 +1462,23 @@ pub async fn request_scorecard(
         conn.query_row(
             "SELECT topic, human_side, model_a_id, status, mode FROM debates WHERE id = ?1",
             rusqlite::params![debate_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )
         .map_err(|e| format!("debate not found (id={debate_id}): {e}"))?
     };
 
     if mode != "sparring" {
-        return Err(format!("Debate {debate_id} is not a sparring debate (mode='{mode}')"));
+        return Err(format!(
+            "Debate {debate_id} is not a sparring debate (mode='{mode}')"
+        ));
     }
     if status != "completed" {
         return Err(format!(
@@ -1344,8 +1516,7 @@ pub async fn request_scorecard(
     let history = load_history(debate_id)?;
 
     // 5. Build judge prompt
-    let judge_prompt =
-        crate::prompts::build_scorecard_judge_prompt(&topic, &human_side, &history);
+    let judge_prompt = crate::prompts::build_scorecard_judge_prompt(&topic, &human_side, &history);
 
     let req = GenerateRequest {
         model: judge_model_name,
@@ -1356,7 +1527,9 @@ pub async fn request_scorecard(
     };
 
     // 6. Stream and collect silently (no UI events)
-    let rx = ollama::generate_stream(req).await.map_err(|e| format!("judge stream start: {e}"))?;
+    let rx = ollama::generate_stream(req)
+        .await
+        .map_err(|e| format!("judge stream start: {e}"))?;
     let mut buffer = String::new();
     let mut rx = rx;
     loop {
@@ -1395,13 +1568,11 @@ pub async fn request_scorecard(
     scorecard.raw_judge_output = buffer.clone();
 
     // 8. Transaction: insert scorecard, update debate winner, update Elo
-    let human_total =
-        scorecard.human_persuasiveness
+    let human_total = scorecard.human_persuasiveness
         + scorecard.human_evidence
         + scorecard.human_coherence
         + scorecard.human_rebuttal;
-    let ai_total =
-        scorecard.ai_persuasiveness
+    let ai_total = scorecard.ai_persuasiveness
         + scorecard.ai_evidence
         + scorecard.ai_coherence
         + scorecard.ai_rebuttal;
@@ -1461,7 +1632,8 @@ pub async fn request_scorecard(
 
     {
         let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
-        conn.execute_batch("BEGIN").map_err(|e| format!("begin transaction: {e}"))?;
+        conn.execute_batch("BEGIN")
+            .map_err(|e| format!("begin transaction: {e}"))?;
 
         let result = (|| -> Result<(), String> {
             // Insert scorecard
@@ -1534,7 +1706,8 @@ pub async fn request_scorecard(
 
         match result {
             Ok(()) => {
-                conn.execute_batch("COMMIT").map_err(|e| format!("commit transaction: {e}"))?;
+                conn.execute_batch("COMMIT")
+                    .map_err(|e| format!("commit transaction: {e}"))?;
             }
             Err(e) => {
                 let _ = conn.execute_batch("ROLLBACK");
@@ -1634,7 +1807,9 @@ pub async fn suggest_topics(model_name: String) -> Result<Vec<String>, String> {
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
         .map(|l| {
-            let stripped = l.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ')' || c == ' ');
+            let stripped = l.trim_start_matches(|c: char| {
+                c.is_ascii_digit() || c == '.' || c == ')' || c == ' '
+            });
             stripped.trim_matches('"').trim().to_string()
         })
         .filter(|l| !l.is_empty() && l.len() > 5)
@@ -1750,7 +1925,10 @@ mod tests {
         assert_eq!(sc.ai_evidence, 7);
         assert_eq!(sc.ai_coherence, 7);
         assert_eq!(sc.ai_rebuttal, 6);
-        assert_eq!(sc.strongest_human_point, "The economic data was compelling.");
+        assert_eq!(
+            sc.strongest_human_point,
+            "The economic data was compelling."
+        );
         assert_eq!(sc.improvement_tip, "Use more concrete examples early on.");
     }
 

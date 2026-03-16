@@ -1,12 +1,13 @@
 {
   "name": "model-colosseum",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "test": "cd src-tauri && cargo test",
     "tauri": "tauri"
   },
   "dependencies": {

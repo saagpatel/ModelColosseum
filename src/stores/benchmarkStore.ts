@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { TestSuite, Prompt, BenchmarkProgress, BenchmarkResult } from "../types";
+import type { TestSuite, Prompt, BenchmarkProgress, BenchmarkResult, BenchmarkMetricsPayload } from "../types";
 
 type BenchmarkPhase = "editing" | "configuring" | "running" | "complete" | "results" | "error";
 
@@ -26,6 +26,7 @@ interface BenchmarkState {
   scoreAllMode: boolean;
   scoreAllPromptIndex: number;
   autoJudgeProgress: { completed: number; total: number; currentModel: string } | null;
+  hardwareMetrics: BenchmarkMetricsPayload[];
 
   setSuites: (suites: TestSuite[]) => void;
   selectSuite: (id: number | null) => void;
@@ -48,6 +49,7 @@ interface BenchmarkState {
   prevPrompt: () => void;
   setAutoJudgeProgress: (progress: { completed: number; total: number; currentModel: string } | null) => void;
   updateResultScore: (resultId: number, score: number) => void;
+  appendMetric: (m: BenchmarkMetricsPayload) => void;
 }
 
 const initialState = {
@@ -66,6 +68,7 @@ const initialState = {
   scoreAllMode: false,
   scoreAllPromptIndex: 0,
   autoJudgeProgress: null,
+  hardwareMetrics: [] as BenchmarkMetricsPayload[],
 };
 
 export const useBenchmarkStore = create<BenchmarkState>((set, get) => ({
@@ -85,6 +88,7 @@ export const useBenchmarkStore = create<BenchmarkState>((set, get) => ({
       runId,
       startedAt: Date.now(),
       streamPreview: "",
+      hardwareMetrics: [],
     }),
 
   updateProgress: (progress) =>
@@ -107,7 +111,7 @@ export const useBenchmarkStore = create<BenchmarkState>((set, get) => ({
 
   setError: (message) => set({ phase: "error", errorMessage: message }),
 
-  reset: () => set(initialState),
+  reset: () => set({ ...initialState, hardwareMetrics: [] }),
 
   setResults: (results) => set({ results }),
 
@@ -143,6 +147,12 @@ export const useBenchmarkStore = create<BenchmarkState>((set, get) => ({
   },
 
   setAutoJudgeProgress: (progress) => set({ autoJudgeProgress: progress }),
+
+  appendMetric: (m) =>
+    set((s) => {
+      const next = [...s.hardwareMetrics, m];
+      return { hardwareMetrics: next.length > 500 ? next.slice(-500) : next };
+    }),
 
   updateResultScore: (resultId, score) =>
     set((s) => ({

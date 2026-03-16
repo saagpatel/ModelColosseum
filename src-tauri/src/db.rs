@@ -52,6 +52,17 @@ fn seed_defaults(conn: &Connection) -> SqlResult<()> {
         )?;
     }
 
+    conn.execute_batch(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('ollama_url', 'http://localhost:11434');
+         INSERT OR IGNORE INTO settings (key, value) VALUES ('prompt_arena_pro', '');
+         INSERT OR IGNORE INTO settings (key, value) VALUES ('prompt_arena_con', '');
+         INSERT OR IGNORE INTO settings (key, value) VALUES ('prompt_formal_opening', '');
+         INSERT OR IGNORE INTO settings (key, value) VALUES ('prompt_formal_rebuttal', '');
+         INSERT OR IGNORE INTO settings (key, value) VALUES ('prompt_formal_closing', '');
+         INSERT OR IGNORE INTO settings (key, value) VALUES ('prompt_socratic_questioner', '');
+         INSERT OR IGNORE INTO settings (key, value) VALUES ('prompt_socratic_defender', '');"
+    )?;
+
     // Insert default user_stats row if missing
     conn.execute_batch(
         "INSERT OR IGNORE INTO user_stats (id, elo_rating, total_debates, wins, losses, draws)

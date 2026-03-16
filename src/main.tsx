@@ -7,6 +7,7 @@ import { Benchmark } from "./pages/Benchmark";
 import { Leaderboard } from "./pages/Leaderboard";
 import { History } from "./pages/History";
 import { SparringRing } from "./pages/SparringRing";
+import { Settings } from "./pages/Settings";
 import "./index.css";
 
 const router = createBrowserRouter([
@@ -33,6 +34,10 @@ const router = createBrowserRouter([
       {
         path: "history",
         element: <History />,
+      },
+      {
+        path: "settings",
+        element: <Settings />,
       },
     ],
   },

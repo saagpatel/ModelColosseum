@@ -196,6 +196,24 @@ function SetupView() {
   const [difficulty, setDifficulty] = useState<Difficulty>("competitive");
   const [starting, setStarting] = useState(false);
   const [userStats, setUserStats] = useState<UserStats | null>(null);
+  const [suggestedTopics, setSuggestedTopics] = useState<string[]>([]);
+  const [loadingTopics, setLoadingTopics] = useState(false);
+
+  const handleSuggestTopics = async () => {
+    if (models.length === 0) return;
+    setLoadingTopics(true);
+    try {
+      const sorted = [...models].sort((a, b) => (a.parameter_count ?? Infinity) - (b.parameter_count ?? Infinity));
+      const smallest = sorted[0];
+      if (!smallest) return;
+      const topics = await invoke<string[]>("suggest_topics", { modelName: smallest.name });
+      setSuggestedTopics(topics);
+    } catch (err) {
+      console.error("suggest_topics error:", err);
+    } finally {
+      setLoadingTopics(false);
+    }
+  };
 
   useEffect(() => {
     invoke<UserStats>("get_user_stats")
@@ -275,9 +293,16 @@ function SetupView() {
 
       {/* Topic */}
       <div>
-        <label className="mb-2 block text-sm font-medium text-slate-400">
-          Debate Topic
-        </label>
+        <div className="mb-2 flex items-center justify-between">
+          <label className="text-sm font-medium text-slate-400">Debate Topic</label>
+          <button
+            onClick={() => void handleSuggestTopics()}
+            disabled={loadingTopics || models.length === 0}
+            className="rounded-md bg-slate-800 px-3 py-1 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {loadingTopics ? "Generating..." : "Suggest Topics"}
+          </button>
+        </div>
         <input
           type="text"
           value={topic}
@@ -285,6 +310,19 @@ function SetupView() {
           placeholder="e.g. Artificial intelligence will create more jobs than it destroys"
           className="w-full rounded-lg border border-slate-700 bg-slate-800/50 px-4 py-3 text-sm text-slate-200 placeholder-slate-600 outline-none transition-colors focus:border-gold-500/50 focus:ring-1 focus:ring-gold-500/30"
         />
+        {suggestedTopics.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {suggestedTopics.map((t) => (
+              <button
+                key={t}
+                onClick={() => setTopic(t)}
+                className="rounded-full border border-slate-700 bg-slate-800/50 px-3 py-1.5 text-xs text-slate-300 transition-colors hover:border-gold-500/50 hover:text-gold-400"
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Side Toggle */}

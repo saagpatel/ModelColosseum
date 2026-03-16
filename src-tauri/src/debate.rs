@@ -145,6 +145,24 @@ pub fn sparring_phase_for_round(round: i32) -> &'static str {
     }
 }
 
+pub fn formal_phase_for_round(round: i32) -> &'static str {
+    match round {
+        1 => "opening",
+        2 => "rebuttal",
+        _ => "closing",
+    }
+}
+
+pub fn socratic_is_questioner(round: i32, total_rounds: i32, speaker: &str) -> bool {
+    let midpoint = (total_rounds + 1) / 2;
+    let first_half = round <= midpoint;
+    match speaker {
+        "model_a" => first_half,
+        "model_b" => !first_half,
+        _ => false,
+    }
+}
+
 fn sparring_phase_index(round: i32) -> usize {
     match round {
         1 | 2 => 0,
@@ -348,6 +366,7 @@ async fn run_debate_loop(
     total_rounds: i32,
     word_limit: u32,
     topic: String,
+    format: String,
     concurrent: bool,
 ) {
     let num_predict = word_limit * 2;
@@ -362,12 +381,30 @@ async fn run_debate_loop(
 
         let history = or_abort!(app, active_map, debate_id, load_history(debate_id));
 
-        let system_a = prompts::build_arena_system_prompt(
-            "pro", &topic, round, word_limit, &history, "model_a",
-        );
-        let system_b = prompts::build_arena_system_prompt(
-            "con", &topic, round, word_limit, &history, "model_b",
-        );
+        let system_a = match format.as_str() {
+            "formal" => prompts::build_formal_prompt(
+                "pro", &topic, formal_phase_for_round(round), word_limit, &history, "model_a",
+            ),
+            "socratic" => prompts::build_socratic_prompt(
+                "pro", &topic, round, word_limit, &history,
+                socratic_is_questioner(round, total_rounds, "model_a"),
+            ),
+            _ => prompts::build_arena_system_prompt(
+                "pro", &topic, round, word_limit, &history, "model_a",
+            ),
+        };
+        let system_b = match format.as_str() {
+            "formal" => prompts::build_formal_prompt(
+                "con", &topic, formal_phase_for_round(round), word_limit, &history, "model_b",
+            ),
+            "socratic" => prompts::build_socratic_prompt(
+                "con", &topic, round, word_limit, &history,
+                socratic_is_questioner(round, total_rounds, "model_b"),
+            ),
+            _ => prompts::build_arena_system_prompt(
+                "con", &topic, round, word_limit, &history, "model_b",
+            ),
+        };
 
         let user_prompt = if round == 1 {
             topic.clone()
@@ -390,7 +427,17 @@ async fn run_debate_loop(
             temperature: Some(0.7),
         };
 
-        let phase = round_to_phase(round, total_rounds);
+        let phase = match format.as_str() {
+            "formal" => formal_phase_for_round(round),
+            "socratic" => {
+                if socratic_is_questioner(round, total_rounds, "model_a") {
+                    "cross_exam"
+                } else {
+                    "argument"
+                }
+            }
+            _ => round_to_phase(round, total_rounds),
+        };
 
         if concurrent {
             let rx_a = or_abort!(app, active_map, debate_id, ollama::generate_stream(req_a).await);
@@ -498,7 +545,12 @@ pub async fn start_debate(
     format: Option<String>,
 ) -> Result<i64, String> {
     let settings = read_settings()?;
-    let total_rounds = rounds.unwrap_or(settings.default_rounds);
+    let debate_format = format.unwrap_or_else(|| "freestyle".into());
+    let total_rounds = if debate_format == "formal" {
+        3
+    } else {
+        rounds.unwrap_or(settings.default_rounds)
+    };
     let word_limit = settings.default_word_limit;
 
     // Fetch model info
@@ -519,8 +571,6 @@ pub async fn start_debate(
 
     let combined_params = param_a.unwrap_or(0) + param_b.unwrap_or(0);
     let concurrent = combined_params <= settings.concurrent_max_params_billions;
-
-    let debate_format = format.unwrap_or_else(|| "freestyle".into());
 
     // Insert debate record
     let debate_id = {
@@ -568,6 +618,7 @@ pub async fn start_debate(
         total_rounds,
         word_limit,
         topic,
+        debate_format,
         concurrent,
     ));
 
@@ -1535,6 +1586,69 @@ pub async fn get_scorecard(debate_id: i64) -> Result<Option<SparringScorecard>, 
 }
 
 // ---------------------------------------------------------------------------
+// Suggest topics command
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn suggest_topics(model_name: String) -> Result<Vec<String>, String> {
+    let req = ollama::GenerateRequest {
+        model: model_name,
+        prompt: "Generate exactly 5 specific, debatable topics. One from each category: technology, philosophy, geopolitics, sports, culture. Be specific and controversial. Format: JSON array of 5 strings, nothing else.".into(),
+        system: None,
+        num_predict: Some(500),
+        temperature: Some(0.9),
+    };
+
+    let mut rx = ollama::generate_stream(req).await?;
+    let mut buffer = String::new();
+
+    while let Some(chunk) = rx.recv().await {
+        match chunk {
+            Ok(c) => {
+                if let Some(ref text) = c.response {
+                    buffer.push_str(text);
+                }
+                if c.done {
+                    break;
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    // Try parsing as JSON array first
+    if let Some(start) = buffer.find('[') {
+        if let Some(end) = buffer.rfind(']') {
+            let slice = &buffer[start..=end];
+            if let Ok(topics) = serde_json::from_str::<Vec<String>>(slice) {
+                if !topics.is_empty() {
+                    return Ok(topics);
+                }
+            }
+        }
+    }
+
+    // Fallback: split by newlines, strip numbering
+    let topics: Vec<String> = buffer
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .map(|l| {
+            let stripped = l.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ')' || c == ' ');
+            stripped.trim_matches('"').trim().to_string()
+        })
+        .filter(|l| !l.is_empty() && l.len() > 5)
+        .take(5)
+        .collect();
+
+    if topics.is_empty() {
+        Err("Failed to parse topic suggestions from model response".into())
+    } else {
+        Ok(topics)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1665,5 +1779,35 @@ mod tests {
         let garbage = "I cannot evaluate this debate. The transcript was too short to judge fairly. Please try again with more content.";
         let result = parse_scorecard_response(garbage);
         assert!(result.is_none(), "garbage input should return None");
+    }
+
+    #[test]
+    fn formal_phase_round_mapping() {
+        assert_eq!(formal_phase_for_round(1), "opening");
+        assert_eq!(formal_phase_for_round(2), "rebuttal");
+        assert_eq!(formal_phase_for_round(3), "closing");
+        assert_eq!(formal_phase_for_round(99), "closing");
+    }
+
+    #[test]
+    fn socratic_questioner_first_half() {
+        assert!(socratic_is_questioner(1, 5, "model_a"));
+        assert!(socratic_is_questioner(3, 5, "model_a"));
+        assert!(!socratic_is_questioner(4, 5, "model_a"));
+        assert!(!socratic_is_questioner(1, 5, "model_b"));
+        assert!(socratic_is_questioner(4, 5, "model_b"));
+    }
+
+    #[test]
+    fn socratic_questioner_even_rounds() {
+        assert!(socratic_is_questioner(1, 4, "model_a"));
+        assert!(socratic_is_questioner(2, 4, "model_a"));
+        assert!(!socratic_is_questioner(3, 4, "model_a"));
+        assert!(socratic_is_questioner(3, 4, "model_b"));
+    }
+
+    #[test]
+    fn socratic_unknown_speaker() {
+        assert!(!socratic_is_questioner(1, 5, "unknown"));
     }
 }

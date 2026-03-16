@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { DebateFormat } from "../types";
 
 type DebatePhase = "idle" | "debating" | "complete" | "voting" | "voted" | "error" | "aborted";
 
@@ -10,6 +11,7 @@ interface DebateState {
   modelBId: number | null;
   totalRounds: number;
   currentRound: number;
+  format: DebateFormat;
   mode: "concurrent" | "sequential" | null;
   errorMessage: string | null;
   eloDeltaA: number | null;
@@ -21,6 +23,7 @@ interface DebateState {
     modelAId: number,
     modelBId: number,
     totalRounds: number,
+    format: DebateFormat,
   ) => void;
   setMode: (mode: "concurrent" | "sequential") => void;
   advanceRound: (round: number) => void;
@@ -39,6 +42,7 @@ const initialState = {
   modelBId: null,
   totalRounds: 5,
   currentRound: 1,
+  format: "freestyle" as DebateFormat,
   mode: null,
   errorMessage: null,
   eloDeltaA: null,
@@ -48,7 +52,7 @@ const initialState = {
 export const useDebateStore = create<DebateState>((set) => ({
   ...initialState,
 
-  startDebate: (debateId, topic, modelAId, modelBId, totalRounds) =>
+  startDebate: (debateId, topic, modelAId, modelBId, totalRounds, format) =>
     set({
       phase: "debating",
       debateId,
@@ -57,6 +61,7 @@ export const useDebateStore = create<DebateState>((set) => ({
       modelBId,
       totalRounds,
       currentRound: 1,
+      format,
       mode: null,
       errorMessage: null,
       eloDeltaA: null,

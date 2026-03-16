@@ -10,7 +10,7 @@ const tabs = [
   { name: "Sparring", to: "/sparring", enabled: true },
   { name: "Leaderboard", to: "/leaderboard", enabled: true },
   { name: "History", to: "/history", enabled: true },
-  { name: "Settings", to: "/settings", enabled: false },
+  { name: "Settings", to: "/settings", enabled: true },
 ] as const;
 
 export function AppShell() {

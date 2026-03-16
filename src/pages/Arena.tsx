@@ -3,6 +3,7 @@ import { DebateSetup } from "../components/DebateSetup";
 import { DebateViewer } from "../components/DebateViewer";
 import { useAppStore } from "../stores/appStore";
 import { useDebateStore } from "../stores/debateStore";
+import type { DebateFormat } from "../types";
 
 export function Arena() {
   const { ollamaOnline, models, loading } = useAppStore();
@@ -13,6 +14,7 @@ export function Arena() {
     modelAId: number,
     modelBId: number,
     rounds: number,
+    format: DebateFormat,
   ) => {
     try {
       const debateId = await invoke<number>("start_debate", {
@@ -20,8 +22,9 @@ export function Arena() {
         modelAId,
         modelBId,
         rounds,
+        format,
       });
-      startDebate(debateId, newTopic, modelAId, modelBId, rounds);
+      startDebate(debateId, newTopic, modelAId, modelBId, rounds, format);
     } catch (err) {
       console.error("start_debate error:", err);
       useDebateStore.getState().setError(String(err));
@@ -74,7 +77,7 @@ export function Arena() {
       )}
 
       {phase === "idle" ? (
-        <DebateSetup models={models} onStart={(t, a, b, r) => void handleStart(t, a, b, r)} loading={loading} />
+        <DebateSetup models={models} onStart={(t, a, b, r, f) => void handleStart(t, a, b, r, f)} loading={loading} />
       ) : (
         <DebateViewer />
       )}

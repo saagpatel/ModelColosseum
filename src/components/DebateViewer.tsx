@@ -4,7 +4,20 @@ import { DebatePanel } from "./DebatePanel";
 import { useDebateEvents } from "../hooks/useDebateEvents";
 import { useDebateStore } from "../stores/debateStore";
 import { useAppStore } from "../stores/appStore";
-import type { VoteResult } from "../types";
+import type { VoteResult, DebateFormat } from "../types";
+
+function getPhaseLabel(format: DebateFormat, round: number, totalRounds: number): string {
+  if (format === "formal") {
+    if (round === 1) return "Opening";
+    if (round === 2) return "Rebuttal";
+    return "Closing";
+  }
+  if (format === "socratic") {
+    const midpoint = Math.ceil((totalRounds + 1) / 2);
+    return round <= midpoint ? "Questions" : "Defense";
+  }
+  return "";
+}
 
 export function DebateViewer() {
   const panelARef = useRef<HTMLDivElement>(null);
@@ -16,6 +29,7 @@ export function DebateViewer() {
     debateId,
     currentRound,
     totalRounds,
+    format,
     mode,
     modelAId,
     modelBId,
@@ -82,6 +96,12 @@ export function DebateViewer() {
               {Math.min(currentRound, totalRounds)}/{totalRounds}
             </p>
           </div>
+
+          {format !== "freestyle" && (
+            <span className="rounded bg-gold-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-gold-400">
+              {getPhaseLabel(format, Math.min(currentRound, totalRounds), totalRounds)}
+            </span>
+          )}
 
           {mode && (
             <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] uppercase tracking-wider text-slate-500">

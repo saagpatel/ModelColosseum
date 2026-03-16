@@ -183,6 +183,89 @@ pub fn build_scorecard_judge_prompt(
     prompt
 }
 
+pub fn build_formal_prompt(
+    role: &str,
+    topic: &str,
+    phase: &str,
+    word_limit: u32,
+    history: &[RoundContent],
+    speaker: &str,
+) -> String {
+    let position = match role {
+        "pro" => "IN FAVOR OF",
+        "con" => "AGAINST",
+        _ => "ON",
+    };
+
+    let mut prompt = match phase {
+        "opening" => format!(
+            "You are arguing {position} the following topic: {topic}\n\nPresent your core position on this topic. Do not address your opponent yet.\n\n"
+        ),
+        "rebuttal" => {
+            let opponent_content: String = history
+                .iter()
+                .filter(|r| r.speaker != speaker)
+                .map(|r| r.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            format!(
+                "You are arguing {position} the following topic: {topic}\n\nYour opponent argued:\n\n\"{opponent_content}\"\n\nAddress each of your opponent's points. Quote their words when rebutting.\n\n"
+            )
+        }
+        _ => format!(
+            "You are arguing {position} the following topic: {topic}\n\nSummarize your strongest arguments. Do not introduce new points. This is your final statement.\n\n"
+        ),
+    };
+
+    prompt.push_str(&format!("Keep your response under {word_limit} words."));
+
+    prompt
+}
+
+pub fn build_socratic_prompt(
+    role: &str,
+    topic: &str,
+    _round: i32,
+    word_limit: u32,
+    history: &[RoundContent],
+    questioner: bool,
+) -> String {
+    let position = match role {
+        "pro" => "IN FAVOR OF",
+        "con" => "AGAINST",
+        _ => "ON",
+    };
+
+    let mut prompt = format!("You are arguing {position} the following topic: {topic}\n\n");
+
+    if questioner {
+        prompt.push_str("Ask 2-3 pointed, specific questions that expose weaknesses in your opponent's position. Do not argue — only question.\n\n");
+    } else {
+        prompt.push_str(
+            "Answer each question directly. Defend your position with evidence. Do not dodge.\n\n",
+        );
+    }
+
+    if !history.is_empty() {
+        prompt.push_str("Debate transcript so far:\n\n");
+        for entry in history {
+            let speaker_label = match entry.speaker.as_str() {
+                "model_a" => "MODEL A",
+                "model_b" => "MODEL B",
+                _ => &entry.speaker,
+            };
+            prompt.push_str(&format!(
+                "[Round {} - {}]: {}\n\n",
+                entry.round_number, speaker_label, entry.content
+            ));
+        }
+    }
+
+    prompt.push_str(&format!("Keep your response under {word_limit} words."));
+
+    prompt
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,5 +472,62 @@ mod tests {
             prompt.contains("AGAINST"),
             "con human_side should map to AGAINST"
         );
+    }
+
+    #[test]
+    fn formal_opening_prompt() {
+        let prompt = build_formal_prompt("pro", "AI is good", "opening", 300, &[], "model_a");
+        assert!(prompt.contains("IN FAVOR OF"));
+        assert!(prompt.contains("Present your core position"));
+        assert!(prompt.contains("300 words"));
+    }
+
+    #[test]
+    fn formal_rebuttal_includes_opponent() {
+        let history = vec![
+            RoundContent {
+                speaker: "model_a".into(),
+                content: "AI helps humanity.".into(),
+                round_number: 1,
+            },
+            RoundContent {
+                speaker: "model_b".into(),
+                content: "AI is dangerous.".into(),
+                round_number: 1,
+            },
+        ];
+        let prompt = build_formal_prompt("pro", "AI is good", "rebuttal", 300, &history, "model_a");
+        assert!(
+            prompt.contains("AI is dangerous"),
+            "should include opponent's text"
+        );
+        assert!(prompt.contains("Address each"));
+    }
+
+    #[test]
+    fn formal_closing_no_new_points() {
+        let prompt = build_formal_prompt("con", "AI is good", "closing", 200, &[], "model_b");
+        assert!(prompt.contains("AGAINST"));
+        assert!(prompt.contains("Do not introduce new points"));
+    }
+
+    #[test]
+    fn socratic_questioner_prompt() {
+        let prompt = build_socratic_prompt("pro", "Free will", 1, 300, &[], true);
+        assert!(prompt.contains("Ask 2-3 pointed"));
+        assert!(prompt.contains("only question"));
+    }
+
+    #[test]
+    fn socratic_defender_prompt() {
+        let history = vec![RoundContent {
+            speaker: "model_a".into(),
+            content: "Is free will real?".into(),
+            round_number: 1,
+        }];
+        let prompt = build_socratic_prompt("con", "Free will", 2, 300, &history, false);
+        assert!(prompt.contains("Answer each question"));
+        assert!(prompt.contains("Do not dodge"));
+        assert!(prompt.contains("[Round 1 - MODEL A]"));
     }
 }

@@ -527,6 +527,55 @@ async fn export_debate_transcript(debate_id: i64) -> Result<String, String> {
     Ok(md)
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct Setting {
+    pub key: String,
+    pub value: String,
+}
+
+#[tauri::command]
+async fn get_settings() -> Result<Vec<Setting>, String> {
+    let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+    let mut stmt = conn
+        .prepare("SELECT key, value FROM settings ORDER BY key")
+        .map_err(|e| format!("query error: {e}"))?;
+    let settings = stmt
+        .query_map([], |row| {
+            Ok(Setting {
+                key: row.get(0)?,
+                value: row.get(1)?,
+            })
+        })
+        .map_err(|e| format!("query error: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("row error: {e}"))?;
+    Ok(settings)
+}
+
+#[tauri::command]
+async fn update_setting(key: String, value: String) -> Result<(), String> {
+    let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = ?2",
+        rusqlite::params![key, value],
+    )
+    .map_err(|e| format!("update setting error: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn reset_elo_ratings() -> Result<(), String> {
+    let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+    conn.execute_batch(
+        "UPDATE models SET elo_rating = 1500.0, arena_wins = 0, arena_losses = 0, arena_draws = 0, total_debates = 0;
+         DELETE FROM elo_history;
+         UPDATE user_stats SET elo_rating = 1500.0, total_debates = 0, wins = 0, losses = 0, draws = 0 WHERE id = 1;",
+    )
+    .map_err(|e| format!("reset elo error: {e}"))?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     db::init_db().expect("failed to initialize database");
@@ -574,6 +623,10 @@ pub fn run() {
             benchmark::cancel_auto_judge,
             benchmark::get_benchmark_leaderboard,
             benchmark::get_run_comparison,
+            get_settings,
+            update_setting,
+            reset_elo_ratings,
+            debate::suggest_topics,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

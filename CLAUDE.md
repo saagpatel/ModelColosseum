@@ -21,7 +21,7 @@ A local-first Tauri 2.0 desktop app for evaluating Ollama models across three mo
 React frontend communicates with Rust backend via Tauri IPC (`invoke` for commands, `listen` for streaming events). Rust backend owns all Ollama communication, SQLite access, and Elo calculations. Frontend is purely presentational + state management.
 
 Key modules:
-- `src-tauri/src/db.rs` — SQLite connection, migrations, schema (14 tables), seed data
+- `src-tauri/src/db.rs` — SQLite connection, migrations, schema (13 tables), seed data
 - `src-tauri/src/ollama.rs` — Ollama REST client with streaming (reads configurable URL from settings)
 - `src-tauri/src/lib.rs` — All Tauri commands, Model/Setting structs, settings key whitelist
 - `src-tauri/src/debate.rs` — Arena (3 formats) + Sparring debate engine, vote + Elo, scorecards
@@ -42,7 +42,7 @@ Key modules:
 ## Current Phase
 **v1.0.0 — Feature Complete** (all phases done, audit remediation applied)
 
-- [x] **Phase 0: Foundation** — Tauri 2.0 scaffold, SQLite (14 tables, WAL), Ollama REST client, Elo module
+- [x] **Phase 0: Foundation** — Tauri 2.0 scaffold, SQLite (13 tables, WAL), Ollama REST client, Elo module
 - [x] **Phase 1: Arena Mode** — Debate engine (freestyle/formal/socratic), vote + Elo, leaderboard, history
 - [x] **Phase 2: Benchmark** — CRUD suites/prompts, runner with TTFT/TPS metrics, manual + auto-judge scoring, blind comparison, hardware metrics, import/export
 - [x] **Phase 3: Sparring Ring** — Human vs AI debates, 3 difficulty levels, 4-phase structure, scorecards, user Elo

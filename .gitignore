@@ -7,3 +7,10 @@ target
 .env
 .env.*
 !.env.example
+
+# Planning artifacts
+SESSION-LOG.md
+IMPLEMENTATION-PLAN.md
+DISCOVERY-SUMMARY.md
+IMPLEMENTATION-ROADMAP.md
+RESUMPTION-PROMPT.md

@@ -123,7 +123,7 @@ ollama serve
 
 ```bash
 # Clone
-git clone https://github.com/YOUR_USERNAME/model-colosseum.git
+git clone https://github.com/saagar210/model-colosseum.git
 cd model-colosseum
 
 # Install frontend dependencies
@@ -172,7 +172,7 @@ The production build creates a `.app` in `src-tauri/target/release/bundle/macos/
 
 The frontend is purely presentational — all Ollama communication, database access, Elo calculations, and prompt engineering happen in Rust. The frontend talks to the backend through Tauri's `invoke` (request-response) and `listen` (streaming events) APIs.
 
-**Database:** 14 SQLite tables in WAL mode, stored at `~/.model-colosseum/colosseum.db`. Models, debates, rounds, Elo history, benchmark suites, prompts, results, scores, scorecards, user stats, and settings.
+**Database:** 13 SQLite tables in WAL mode, stored at `~/.model-colosseum/colosseum.db`. Models, debates, rounds, Elo history, benchmark suites, prompts, results, scores, scorecards, user stats, and settings.
 
 **Streaming:** Ollama returns NDJSON from `/api/generate`. Rust reads the byte stream line-by-line, parses each JSON chunk, sends tokens through a `tokio::mpsc` channel, and emits Tauri events that the React frontend consumes in real time.
 

@@ -14,6 +14,17 @@ use tokio_util::sync::CancellationToken;
 
 pub struct ActiveDebates(pub Arc<Mutex<HashMap<i64, CancellationToken>>>);
 
+pub struct ActiveSparrings(pub Arc<Mutex<HashMap<i64, SparringState>>>);
+
+pub struct SparringState {
+    pub cancel_token: CancellationToken,
+    pub difficulty: String,
+    pub model_name: String,
+    pub topic: String,
+    pub human_side: String,
+    pub word_limits: [u32; 4], // [opening, rebuttal1, rebuttal2, closing]
+}
+
 // ---------------------------------------------------------------------------
 // Event payloads
 // ---------------------------------------------------------------------------
@@ -54,6 +65,30 @@ pub struct DebateErrorPayload {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DebateAbortedPayload {
     pub debate_id: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SparringStartedPayload {
+    pub debate_id: i64,
+    pub first_phase: String,
+    pub word_limit: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SparringRoundCompletePayload {
+    pub debate_id: i64,
+    pub round: i32,
+    pub phase: String,
+    pub ai_content: String,
+    pub next_phase: Option<String>,
+    pub next_word_limit: Option<u32>,
+    pub is_complete: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SparringErrorPayload {
+    pub debate_id: i64,
+    pub message: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +133,39 @@ pub fn round_to_phase(round: i32, total: i32) -> &'static str {
         "closing"
     } else {
         "argument"
+    }
+}
+
+pub fn sparring_phase_for_round(round: i32) -> &'static str {
+    match round {
+        1 | 2 => "opening",
+        3..=6 => "rebuttal",
+        7 | 8 => "closing",
+        _ => "argument",
+    }
+}
+
+fn sparring_phase_index(round: i32) -> usize {
+    match round {
+        1 | 2 => 0,
+        3 | 4 => 1,
+        5 | 6 => 2,
+        7 | 8 => 3,
+        _ => 0,
+    }
+}
+
+fn word_limit_for_round(round: i32, limits: &[u32; 4]) -> u32 {
+    limits[sparring_phase_index(round)]
+}
+
+fn default_word_limits() -> [u32; 4] {
+    [200, 300, 300, 150]
+}
+
+fn cleanup_sparring(map: &Arc<Mutex<HashMap<i64, SparringState>>>, debate_id: i64) {
+    if let Ok(mut m) = map.lock() {
+        m.remove(&debate_id);
     }
 }
 
@@ -689,6 +757,279 @@ pub async fn vote_debate(debate_id: i64, winner: String) -> Result<VoteResult, S
 }
 
 // ---------------------------------------------------------------------------
+// Sparring commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn start_sparring(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ActiveSparrings>,
+    topic: String,
+    model_id: i64,
+    human_side: String,
+    difficulty: String,
+) -> Result<i64, String> {
+    // Validate inputs
+    if !["pro", "con"].contains(&human_side.as_str()) {
+        return Err(format!("Invalid human_side '{}': must be 'pro' or 'con'", human_side));
+    }
+    if !["casual", "competitive", "expert"].contains(&difficulty.as_str()) {
+        return Err(format!("Invalid difficulty '{}': must be 'casual', 'competitive', or 'expert'", difficulty));
+    }
+
+    // Fetch model name from DB
+    let model_name = {
+        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        conn.query_row(
+            "SELECT name FROM models WHERE id = ?1",
+            rusqlite::params![model_id],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|e| format!("model not found (id={model_id}): {e}"))?
+    };
+
+    // Insert debate record
+    let debate_id = {
+        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        conn.execute(
+            "INSERT INTO debates (topic, mode, debate_format, model_a_id, model_b_id, human_side, total_rounds, status)
+             VALUES (?1, 'sparring', 'freestyle', ?2, NULL, ?3, 8, 'in_progress')",
+            rusqlite::params![topic, model_id, human_side],
+        )
+        .map_err(|e| format!("insert debate error: {e}"))?;
+        conn.last_insert_rowid()
+    };
+
+    // Create state
+    let cancel_token = CancellationToken::new();
+    let word_limits = default_word_limits();
+    {
+        let mut map = state.0.lock().map_err(|e| format!("state lock: {e}"))?;
+        map.insert(debate_id, SparringState {
+            cancel_token: cancel_token.clone(),
+            difficulty: difficulty.clone(),
+            model_name,
+            topic: topic.clone(),
+            human_side: human_side.clone(),
+            word_limits,
+        });
+    }
+
+    // Emit started event
+    let _ = app.emit("sparring:started", SparringStartedPayload {
+        debate_id,
+        first_phase: "opening".into(),
+        word_limit: word_limits[0],
+    });
+
+    Ok(debate_id)
+}
+
+#[tauri::command]
+pub async fn submit_human_argument(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ActiveSparrings>,
+    debate_id: i64,
+    content: String,
+) -> Result<(), String> {
+    // Read state
+    let (cancel_token, difficulty, model_name, topic, human_side, word_limits) = {
+        let map = state.0.lock().map_err(|e| format!("state lock: {e}"))?;
+        let s = map.get(&debate_id).ok_or_else(|| format!("No active sparring session for debate {debate_id}"))?;
+        (
+            s.cancel_token.clone(),
+            s.difficulty.clone(),
+            s.model_name.clone(),
+            s.topic.clone(),
+            s.human_side.clone(),
+            s.word_limits,
+        )
+    };
+
+    // Count existing rounds
+    let existing_rounds = {
+        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        conn.query_row(
+            "SELECT COUNT(*) FROM rounds WHERE debate_id = ?1",
+            rusqlite::params![debate_id],
+            |row| row.get::<_, i32>(0),
+        )
+        .map_err(|e| format!("count rounds error: {e}"))?
+    };
+
+    let human_round = existing_rounds + 1;
+    let ai_round = existing_rounds + 2;
+
+    // Validate it's human's turn (odd rounds)
+    if human_round % 2 != 1 {
+        return Err(format!("Not human's turn (round {human_round})"));
+    }
+
+    if human_round > 8 {
+        return Err("Sparring session is already complete (8 rounds done)".into());
+    }
+
+    let phase = sparring_phase_for_round(human_round);
+
+    // Save human round with zero metrics
+    save_round(debate_id, human_round, "human", phase, &content, &RoundMetrics {
+        tokens_generated: None,
+        time_to_first_token_ms: None,
+        generation_time_ms: 0,
+        tokens_per_second: None,
+    })?;
+
+    // Spawn AI response
+    let active_map = Arc::clone(&state.0);
+    tokio::spawn(async move {
+        let ai_phase = sparring_phase_for_round(ai_round);
+        let ai_word_limit = word_limit_for_round(ai_round, &word_limits);
+
+        // Load history
+        let history = match load_history(debate_id) {
+            Ok(h) => h,
+            Err(e) => {
+                let _ = app.emit("sparring:error", SparringErrorPayload {
+                    debate_id,
+                    message: e,
+                });
+                return;
+            }
+        };
+
+        // Determine AI side (opposite of human)
+        let ai_side = if human_side == "pro" { "con" } else { "pro" };
+
+        // Build prompt
+        let system_prompt = prompts::build_sparring_system_prompt(
+            &difficulty, ai_side, &topic, ai_phase, ai_word_limit, &history,
+        );
+
+        let req = ollama::GenerateRequest {
+            model: model_name,
+            prompt: "Continue the debate.".into(),
+            system: Some(system_prompt),
+            num_predict: Some(ai_word_limit * 2),
+            temperature: Some(0.7),
+        };
+
+        // Start stream
+        let rx = match ollama::generate_stream(req).await {
+            Ok(rx) => rx,
+            Err(e) => {
+                let _ = app.emit("sparring:error", SparringErrorPayload {
+                    debate_id,
+                    message: e,
+                });
+                return;
+            }
+        };
+
+        let start = Instant::now();
+        let result = stream_and_collect(
+            &app, "sparring:stream", debate_id, ai_round, rx, &cancel_token, start,
+        ).await;
+
+        match result {
+            Ok((ai_content, metrics)) => {
+                if let Err(e) = save_round(debate_id, ai_round, "model_a", ai_phase, &ai_content, &metrics) {
+                    let _ = app.emit("sparring:error", SparringErrorPayload {
+                        debate_id,
+                        message: e,
+                    });
+                    return;
+                }
+
+                let is_complete = ai_round >= 8;
+
+                // Determine next phase info
+                let (next_phase, next_word_limit) = if is_complete {
+                    (None, None)
+                } else {
+                    let next_round = ai_round + 1;
+                    (
+                        Some(sparring_phase_for_round(next_round).to_string()),
+                        Some(word_limit_for_round(next_round, &word_limits)),
+                    )
+                };
+
+                let _ = app.emit("sparring:round_complete", SparringRoundCompletePayload {
+                    debate_id,
+                    round: ai_round,
+                    phase: ai_phase.to_string(),
+                    ai_content,
+                    next_phase,
+                    next_word_limit,
+                    is_complete,
+                });
+
+                if is_complete {
+                    // Update DB status
+                    {
+                        let conn = match db::get_db().lock() {
+                            Ok(c) => c,
+                            Err(e) => {
+                                let _ = app.emit("sparring:error", SparringErrorPayload {
+                                    debate_id,
+                                    message: format!("db lock: {e}"),
+                                });
+                                return;
+                            }
+                        };
+                        let _ = conn.execute(
+                            "UPDATE debates SET status = 'completed', completed_at = datetime('now') WHERE id = ?1",
+                            rusqlite::params![debate_id],
+                        );
+                    }
+                    cleanup_sparring(&active_map, debate_id);
+                    let _ = app.emit("sparring:complete", DebateCompletePayload {
+                        debate_id,
+                        total_rounds: 8,
+                    });
+                }
+            }
+            Err(e) if e == "cancelled" => {
+                let _ = abort_debate_in_db(debate_id);
+                cleanup_sparring(&active_map, debate_id);
+                let _ = app.emit("sparring:aborted", DebateAbortedPayload { debate_id });
+            }
+            Err(e) => {
+                let _ = abort_debate_in_db(debate_id);
+                cleanup_sparring(&active_map, debate_id);
+                let _ = app.emit("sparring:error", SparringErrorPayload {
+                    debate_id,
+                    message: e,
+                });
+            }
+        }
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn abort_sparring(
+    state: tauri::State<'_, ActiveSparrings>,
+    debate_id: i64,
+) -> Result<(), String> {
+    let found = {
+        let map = state.0.lock().map_err(|e| format!("state lock: {e}"))?;
+        if let Some(s) = map.get(&debate_id) {
+            s.cancel_token.cancel();
+            true
+        } else {
+            false
+        }
+    };
+
+    if !found {
+        abort_debate_in_db(debate_id)?;
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -724,5 +1065,48 @@ mod tests {
         assert!(valid.contains(&"model_b"));
         assert!(valid.contains(&"draw"));
         assert!(!valid.contains(&"invalid"));
+    }
+
+    #[test]
+    fn sparring_phase_mapping() {
+        assert_eq!(sparring_phase_for_round(1), "opening");
+        assert_eq!(sparring_phase_for_round(2), "opening");
+        assert_eq!(sparring_phase_for_round(3), "rebuttal");
+        assert_eq!(sparring_phase_for_round(4), "rebuttal");
+        assert_eq!(sparring_phase_for_round(5), "rebuttal");
+        assert_eq!(sparring_phase_for_round(6), "rebuttal");
+        assert_eq!(sparring_phase_for_round(7), "closing");
+        assert_eq!(sparring_phase_for_round(8), "closing");
+    }
+
+    #[test]
+    fn sparring_phase_index_mapping() {
+        assert_eq!(sparring_phase_index(1), 0);
+        assert_eq!(sparring_phase_index(2), 0);
+        assert_eq!(sparring_phase_index(3), 1);
+        assert_eq!(sparring_phase_index(4), 1);
+        assert_eq!(sparring_phase_index(5), 2);
+        assert_eq!(sparring_phase_index(6), 2);
+        assert_eq!(sparring_phase_index(7), 3);
+        assert_eq!(sparring_phase_index(8), 3);
+    }
+
+    #[test]
+    fn word_limits_per_round() {
+        let limits = default_word_limits();
+        assert_eq!(word_limit_for_round(1, &limits), 200);
+        assert_eq!(word_limit_for_round(2, &limits), 200);
+        assert_eq!(word_limit_for_round(3, &limits), 300);
+        assert_eq!(word_limit_for_round(5, &limits), 300);
+        assert_eq!(word_limit_for_round(7, &limits), 150);
+        assert_eq!(word_limit_for_round(8, &limits), 150);
+    }
+
+    #[test]
+    fn sparring_out_of_range_round() {
+        // Out of range defaults to "argument" / index 0
+        assert_eq!(sparring_phase_for_round(9), "argument");
+        assert_eq!(sparring_phase_for_round(0), "argument");
+        assert_eq!(sparring_phase_index(10), 0);
     }
 }

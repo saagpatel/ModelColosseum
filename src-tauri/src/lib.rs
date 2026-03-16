@@ -181,7 +181,10 @@ async fn get_debates(
     let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
 
     // Build dynamic query
-    let mut conditions = vec!["d.status IN ('completed', 'voting', 'abandoned')".to_string()];
+    let mut conditions = vec![
+        "d.mode = 'arena'".to_string(),
+        "d.status IN ('completed', 'voting', 'abandoned')".to_string(),
+    ];
     let mut param_values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
     if let Some(c) = cursor {
@@ -323,6 +326,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(debate::ActiveDebates(Arc::new(Mutex::new(HashMap::new()))))
+        .manage(debate::ActiveSparrings(Arc::new(Mutex::new(HashMap::new()))))
         .manage(benchmark::ActiveBenchmarks(Arc::new(Mutex::new(HashMap::new()))))
         .manage(benchmark::ActiveJudgeRuns(Arc::new(Mutex::new(HashMap::new()))))
         .invoke_handler(tauri::generate_handler![
@@ -336,6 +340,9 @@ pub fn run() {
             debate::start_debate,
             debate::abort_debate,
             debate::vote_debate,
+            debate::start_sparring,
+            debate::submit_human_argument,
+            debate::abort_sparring,
             benchmark::list_test_suites,
             benchmark::create_test_suite,
             benchmark::update_test_suite,

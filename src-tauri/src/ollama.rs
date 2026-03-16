@@ -46,6 +46,7 @@ pub struct ShowDetails {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct StreamChunk {
     pub model: Option<String>,
     pub response: Option<String>,

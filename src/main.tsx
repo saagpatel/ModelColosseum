@@ -6,6 +6,7 @@ import { Arena } from "./pages/Arena";
 import { Benchmark } from "./pages/Benchmark";
 import { Leaderboard } from "./pages/Leaderboard";
 import { History } from "./pages/History";
+import { SparringRing } from "./pages/SparringRing";
 import "./index.css";
 
 const router = createBrowserRouter([
@@ -20,6 +21,10 @@ const router = createBrowserRouter([
       {
         path: "benchmark",
         element: <Benchmark />,
+      },
+      {
+        path: "sparring",
+        element: <SparringRing />,
       },
       {
         path: "leaderboard",

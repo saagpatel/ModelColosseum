@@ -2,11 +2,12 @@ import { useEffect } from "react";
 import { NavLink, Outlet } from "react-router";
 import { useAppStore } from "../stores/appStore";
 import { useDebateStore } from "../stores/debateStore";
+import { useSparringStore } from "../stores/sparringStore";
 
 const tabs = [
   { name: "Arena", to: "/", enabled: true },
   { name: "Benchmark", to: "/benchmark", enabled: true },
-  { name: "Sparring", to: "/sparring", enabled: false },
+  { name: "Sparring", to: "/sparring", enabled: true },
   { name: "Leaderboard", to: "/leaderboard", enabled: true },
   { name: "History", to: "/history", enabled: true },
   { name: "Settings", to: "/settings", enabled: false },
@@ -15,6 +16,7 @@ const tabs = [
 export function AppShell() {
   const ollamaOnline = useAppStore((s) => s.ollamaOnline);
   const debatePhase = useDebateStore((s) => s.phase);
+  const sparringPhase = useSparringStore((s) => s.phase);
 
   useEffect(() => {
     void useAppStore.getState().init();
@@ -46,6 +48,9 @@ export function AppShell() {
               >
                 {tab.name}
                 {tab.name === "Arena" && debatePhase === "debating" && (
+                  <span className="absolute -right-0.5 top-2 h-1.5 w-1.5 animate-pulse rounded-full bg-gold-400" />
+                )}
+                {tab.name === "Sparring" && (sparringPhase === "human_turn" || sparringPhase === "ai_turn") && (
                   <span className="absolute -right-0.5 top-2 h-1.5 w-1.5 animate-pulse rounded-full bg-gold-400" />
                 )}
               </NavLink>

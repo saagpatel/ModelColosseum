@@ -185,3 +185,24 @@ export interface AutoJudgeCompletePayload {
   run_id: number;
   scores_added: number;
 }
+
+export interface SparringStartedPayload {
+  debate_id: number;
+  first_phase: string;
+  word_limit: number;
+}
+
+export interface SparringRoundCompletePayload {
+  debate_id: number;
+  round: number;
+  phase: string;
+  ai_content: string;
+  next_phase: string | null;
+  next_word_limit: number | null;
+  is_complete: boolean;
+}
+
+export interface SparringErrorPayload {
+  debate_id: number;
+  message: string;
+}

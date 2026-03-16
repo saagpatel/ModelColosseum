@@ -319,12 +319,221 @@ async fn refresh_models() -> Result<Vec<Model>, String> {
     list_models().await
 }
 
+#[tauri::command]
+async fn get_user_stats() -> Result<debate::UserStats, String> {
+    let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+    conn.query_row(
+        "SELECT elo_rating, total_debates, wins, losses, draws FROM user_stats WHERE id = 1",
+        [],
+        |row| {
+            Ok(debate::UserStats {
+                elo_rating: row.get(0)?,
+                total_debates: row.get(1)?,
+                wins: row.get(2)?,
+                losses: row.get(3)?,
+                draws: row.get(4)?,
+            })
+        },
+    )
+    .map_err(|e| format!("user stats query error: {e}"))
+}
+
+#[tauri::command]
+async fn export_debate_transcript(debate_id: i64) -> Result<String, String> {
+    // 1. Fetch debate metadata
+    struct DebateMeta {
+        topic: String,
+        mode: String,
+        human_side: Option<String>,
+        winner: Option<String>,
+        model_a_id: Option<i64>,
+        model_b_id: Option<i64>,
+        created_at: String,
+    }
+    let meta: DebateMeta = {
+        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        conn.query_row(
+            "SELECT topic, mode, human_side, winner, model_a_id, model_b_id, created_at
+             FROM debates WHERE id = ?1",
+            rusqlite::params![debate_id],
+            |row| {
+                Ok(DebateMeta {
+                    topic: row.get(0)?,
+                    mode: row.get(1)?,
+                    human_side: row.get(2)?,
+                    winner: row.get(3)?,
+                    model_a_id: row.get(4)?,
+                    model_b_id: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
+            },
+        )
+        .map_err(|e| format!("debate not found (id={debate_id}): {e}"))?
+    };
+    let topic = meta.topic;
+    let mode = meta.mode;
+    let human_side = meta.human_side;
+    let winner = meta.winner;
+    let model_a_id = meta.model_a_id;
+    let model_b_id = meta.model_b_id;
+    let created_at = meta.created_at;
+
+    // 2. Resolve model display names
+    let resolve_model_name = |id: Option<i64>| -> String {
+        let Some(mid) = id else { return "Unknown".into() };
+        let Ok(conn) = db::get_db().lock() else { return "Unknown".into() };
+        conn.query_row(
+            "SELECT display_name FROM models WHERE id = ?1",
+            rusqlite::params![mid],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap_or_else(|_| "Unknown".into())
+    };
+
+    let model_a_name = resolve_model_name(model_a_id);
+    let model_b_name = if mode == "arena" {
+        resolve_model_name(model_b_id)
+    } else {
+        String::new()
+    };
+
+    let model_names = if mode == "arena" {
+        format!("{model_a_name} vs {model_b_name}")
+    } else {
+        model_a_name.clone()
+    };
+
+    // 3. Load rounds
+    let rounds: Vec<RoundTranscript> = {
+        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT round_number, speaker, phase, content FROM rounds
+                 WHERE debate_id = ?1 ORDER BY round_number, id",
+            )
+            .map_err(|e| format!("query error: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![debate_id], |row| {
+                Ok(RoundTranscript {
+                    round_number: row.get(0)?,
+                    speaker: row.get(1)?,
+                    phase: row.get(2)?,
+                    content: row.get(3)?,
+                })
+            })
+            .map_err(|e| format!("query error: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("row error: {e}"))?;
+        rows
+    };
+
+    // 4. Try loading scorecard for sparring debates
+    let scorecard = if mode == "sparring" {
+        debate::get_scorecard(debate_id).await.ok().flatten()
+    } else {
+        None
+    };
+
+    // 5. Build Markdown
+    let mut md = String::new();
+
+    md.push_str(&format!("# Debate: {topic}\n\n"));
+
+    let result_str = match winner.as_deref() {
+        Some("human") => "Human wins".to_string(),
+        Some("model_a") => format!("{model_a_name} wins"),
+        Some("model_b") => format!("{model_b_name} wins"),
+        Some("draw") => "Draw".to_string(),
+        _ => "In progress".to_string(),
+    };
+
+    md.push_str(&format!(
+        "**Date:** {created_at} | **Mode:** {mode} | **Models:** {model_names}"
+    ));
+    if let Some(ref side) = human_side {
+        md.push_str(&format!(" | **Your Side:** {}", side.to_uppercase()));
+    }
+    md.push_str(&format!(" | **Result:** {result_str}\n\n---\n\n"));
+
+    // Group rounds by round_number to build sections
+    let mut current_round = 0i32;
+    for r in &rounds {
+        if r.round_number != current_round {
+            current_round = r.round_number;
+            let phase_label = {
+                let p = r.phase.as_str();
+                match p {
+                    "opening" => "Opening",
+                    "rebuttal" => "Rebuttal",
+                    "closing" => "Closing",
+                    _ => "Argument",
+                }
+            };
+            md.push_str(&format!("## Round {current_round} — {phase_label}\n\n"));
+        }
+
+        let speaker_label = match r.speaker.as_str() {
+            "human" => format!("You ({})", human_side.as_deref().unwrap_or("?").to_uppercase()),
+            "model_a" => {
+                if mode == "arena" {
+                    format!("PRO ({model_a_name})")
+                } else {
+                    format!("AI ({model_a_name})")
+                }
+            }
+            "model_b" => format!("CON ({model_b_name})"),
+            other => other.to_string(),
+        };
+
+        md.push_str(&format!("### {speaker_label}\n\n{}\n\n", r.content));
+    }
+
+    // 6. Append scorecard if available
+    if let Some(sc) = scorecard {
+        md.push_str("---\n\n## Scorecard\n\n");
+        md.push_str("| Dimension | You | AI |\n");
+        md.push_str("|---|---|---|\n");
+        md.push_str(&format!(
+            "| Persuasiveness | {} | {} |\n",
+            sc.human_persuasiveness, sc.ai_persuasiveness
+        ));
+        md.push_str(&format!(
+            "| Evidence | {} | {} |\n",
+            sc.human_evidence, sc.ai_evidence
+        ));
+        md.push_str(&format!(
+            "| Coherence | {} | {} |\n",
+            sc.human_coherence, sc.ai_coherence
+        ));
+        md.push_str(&format!(
+            "| Rebuttal | {} | {} |\n",
+            sc.human_rebuttal, sc.ai_rebuttal
+        ));
+        md.push('\n');
+        if !sc.strongest_human_point.is_empty() {
+            md.push_str(&format!("**Strongest point:** {}\n\n", sc.strongest_human_point));
+        }
+        if !sc.weakest_human_point.is_empty() {
+            md.push_str(&format!("**Weakest point:** {}\n\n", sc.weakest_human_point));
+        }
+        if !sc.missed_argument.is_empty() {
+            md.push_str(&format!("**Missed argument:** {}\n\n", sc.missed_argument));
+        }
+        if !sc.improvement_tip.is_empty() {
+            md.push_str(&format!("**Tip:** {}\n\n", sc.improvement_tip));
+        }
+    }
+
+    Ok(md)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     db::init_db().expect("failed to initialize database");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(debate::ActiveDebates(Arc::new(Mutex::new(HashMap::new()))))
         .manage(debate::ActiveSparrings(Arc::new(Mutex::new(HashMap::new()))))
         .manage(benchmark::ActiveBenchmarks(Arc::new(Mutex::new(HashMap::new()))))
@@ -343,6 +552,10 @@ pub fn run() {
             debate::start_sparring,
             debate::submit_human_argument,
             debate::abort_sparring,
+            debate::request_scorecard,
+            debate::get_scorecard,
+            get_user_stats,
+            export_debate_transcript,
             benchmark::list_test_suites,
             benchmark::create_test_suite,
             benchmark::update_test_suite,

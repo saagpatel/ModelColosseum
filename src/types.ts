@@ -206,3 +206,28 @@ export interface SparringErrorPayload {
   debate_id: number;
   message: string;
 }
+
+export interface SparringScorecard {
+  debate_id: number;
+  human_persuasiveness: number;
+  human_evidence: number;
+  human_coherence: number;
+  human_rebuttal: number;
+  ai_persuasiveness: number;
+  ai_evidence: number;
+  ai_coherence: number;
+  ai_rebuttal: number;
+  strongest_human_point: string;
+  weakest_human_point: string;
+  missed_argument: string;
+  improvement_tip: string;
+  raw_judge_output: string;
+}
+
+export interface UserStats {
+  elo_rating: number;
+  total_debates: number;
+  wins: number;
+  losses: number;
+  draws: number;
+}

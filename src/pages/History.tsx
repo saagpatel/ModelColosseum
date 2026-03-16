@@ -172,6 +172,25 @@ export function History() {
                             </p>
                           </div>
                         ))}
+                        <button
+                          onClick={async () => {
+                            try {
+                              const markdown = await invoke<string>("export_debate_transcript", { debateId: d.id });
+                              const blob = new Blob([markdown], { type: "text/markdown" });
+                              const url = URL.createObjectURL(blob);
+                              const a = document.createElement("a");
+                              a.href = url;
+                              a.download = `debate-${d.id}.md`;
+                              a.click();
+                              URL.revokeObjectURL(url);
+                            } catch (err) {
+                              console.error("Export failed:", err);
+                            }
+                          }}
+                          className="mt-4 self-start rounded-lg border border-slate-700 bg-slate-800 px-4 py-2 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-700"
+                        >
+                          Export Transcript
+                        </button>
                       </div>
                     )}
                   </div>

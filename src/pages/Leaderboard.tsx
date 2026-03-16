@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { LineChart, Line, ResponsiveContainer } from "recharts";
 import { BenchmarkLeaderboard } from "../components/benchmark/BenchmarkLeaderboard";
-import type { Model, EloHistoryPoint } from "../types";
+import type { Model, EloHistoryPoint, UserStats } from "../types";
 
 type SortKey = "elo_rating" | "arena_wins" | "arena_losses" | "arena_draws" | "total_debates";
 type SortDir = "asc" | "desc";
@@ -18,6 +18,7 @@ export function Leaderboard() {
   const [sortKey, setSortKey] = useState<SortKey>("elo_rating");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [loading, setLoading] = useState(true);
+  const [userStats, setUserStats] = useState<UserStats | null>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -41,6 +42,12 @@ export function Leaderboard() {
     } finally {
       setLoading(false);
     }
+    try {
+      const stats = await invoke<UserStats>("get_user_stats");
+      if (stats.total_debates > 0) setUserStats(stats);
+    } catch {
+      // no sparring history yet
+    }
   }, []);
 
   useEffect(() => { void fetchData(); }, [fetchData]);
@@ -49,6 +56,20 @@ export function Leaderboard() {
     const mul = sortDir === "desc" ? -1 : 1;
     return mul * (a[sortKey] - b[sortKey]);
   });
+
+  type LeaderboardEntry =
+    | { type: "model"; data: Model }
+    | { type: "you"; data: UserStats };
+
+  const entries: LeaderboardEntry[] = sorted.map((m) => ({ type: "model" as const, data: m }));
+  if (userStats) {
+    const idx = entries.findIndex(
+      (e) => e.type === "model" && e.data.elo_rating < userStats.elo_rating
+    );
+    const youEntry: LeaderboardEntry = { type: "you", data: userStats };
+    if (idx === -1) entries.push(youEntry);
+    else entries.splice(idx, 0, youEntry);
+  }
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -132,7 +153,34 @@ export function Leaderboard() {
                 </tr>
               </thead>
               <tbody>
-                {sorted.map((model, idx) => {
+                {entries.map((entry, idx) => {
+                  if (entry.type === "you") {
+                    const u = entry.data;
+                    return (
+                      <tr key="you" className="border-b border-slate-800/50 border-l-2 border-l-gold-500 bg-gold-500/5 transition-colors hover:bg-gold-500/10">
+                        <td className="px-4 py-3 text-sm font-bold text-gold-500">{idx + 1}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-bold text-gold-400">You</span>
+                            <span className="rounded bg-gold-500/10 px-1.5 py-0.5 text-[10px] text-gold-500">
+                              Sparring
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono text-sm font-bold text-gold-400">
+                          {u.elo_rating.toFixed(0)}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="block text-center text-[10px] text-slate-600">—</span>
+                        </td>
+                        <td className="px-4 py-3 text-right text-sm text-emerald-400">{u.wins}</td>
+                        <td className="px-4 py-3 text-right text-sm text-red-400">{u.losses}</td>
+                        <td className="px-4 py-3 text-right text-sm text-slate-400">{u.draws}</td>
+                        <td className="px-4 py-3 text-right text-sm text-slate-300">{u.total_debates}</td>
+                      </tr>
+                    );
+                  }
+                  const model = entry.data;
                   const spark = sparklines[model.id] ?? [];
                   return (
                     <tr key={model.id} className="border-b border-slate-800/50 transition-colors hover:bg-slate-800/30">

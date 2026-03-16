@@ -1,6 +1,7 @@
 import { create } from "zustand";
+import type { SparringScorecard } from "../types";
 
-type SparringPhase = "idle" | "human_turn" | "ai_turn" | "complete" | "error" | "aborted";
+type SparringPhase = "idle" | "human_turn" | "ai_turn" | "complete" | "scoring" | "scored" | "error" | "aborted";
 type SparringStage = "opening" | "rebuttal" | "closing";
 type Difficulty = "casual" | "competitive" | "expert";
 type Side = "pro" | "con";
@@ -18,6 +19,7 @@ interface SparringState {
   topic: string;
   humanSide: Side | null;
   modelId: number | null;
+  judgeModelId: number | null;
   difficulty: Difficulty | null;
   currentStage: SparringStage;
   currentRound: number;
@@ -25,6 +27,7 @@ interface SparringState {
   aiStreamContent: string;
   rounds: RoundEntry[];
   errorMessage: string | null;
+  scorecard: SparringScorecard | null;
 
   startSparring: (debateId: number, topic: string, humanSide: Side, modelId: number, difficulty: Difficulty, wordLimit: number) => void;
   submitHumanRound: (content: string) => void;
@@ -33,6 +36,9 @@ interface SparringState {
   setComplete: () => void;
   setError: (message: string) => void;
   setAborted: () => void;
+  setJudgeModelId: (id: number) => void;
+  startScoring: () => void;
+  setScorecard: (card: SparringScorecard) => void;
   reset: () => void;
 }
 
@@ -48,6 +54,7 @@ const initialState = {
   topic: "",
   humanSide: null,
   modelId: null,
+  judgeModelId: null,
   difficulty: null,
   currentStage: "opening" as SparringStage,
   currentRound: 1,
@@ -55,6 +62,7 @@ const initialState = {
   aiStreamContent: "",
   rounds: [] as RoundEntry[],
   errorMessage: null,
+  scorecard: null,
 };
 
 export const useSparringStore = create<SparringState>((set) => ({
@@ -74,6 +82,7 @@ export const useSparringStore = create<SparringState>((set) => ({
       aiStreamContent: "",
       rounds: [],
       errorMessage: null,
+      scorecard: null,
     }),
 
   submitHumanRound: (content) =>
@@ -117,5 +126,8 @@ export const useSparringStore = create<SparringState>((set) => ({
   setComplete: () => set({ phase: "complete" }),
   setError: (message) => set({ phase: "error", errorMessage: message }),
   setAborted: () => set({ phase: "aborted" }),
+  setJudgeModelId: (id) => set({ judgeModelId: id }),
+  startScoring: () => set({ phase: "scoring" }),
+  setScorecard: (card) => set({ phase: "scored", scorecard: card }),
   reset: () => set(initialState),
 }));

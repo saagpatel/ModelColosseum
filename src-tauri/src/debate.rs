@@ -1030,6 +1030,511 @@ pub async fn abort_sparring(
 }
 
 // ---------------------------------------------------------------------------
+// Scorecard structs
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SparringScorecard {
+    pub debate_id: i64,
+    pub human_persuasiveness: i32,
+    pub human_evidence: i32,
+    pub human_coherence: i32,
+    pub human_rebuttal: i32,
+    pub ai_persuasiveness: i32,
+    pub ai_evidence: i32,
+    pub ai_coherence: i32,
+    pub ai_rebuttal: i32,
+    pub strongest_human_point: String,
+    pub weakest_human_point: String,
+    pub missed_argument: String,
+    pub improvement_tip: String,
+    pub raw_judge_output: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UserStats {
+    pub elo_rating: f64,
+    pub total_debates: i64,
+    pub wins: i64,
+    pub losses: i64,
+    pub draws: i64,
+}
+
+// ---------------------------------------------------------------------------
+// Scorecard parsing
+// ---------------------------------------------------------------------------
+
+fn extract_score_from_text(text: &str, field: &str) -> Option<i32> {
+    // Look for patterns like: "persuasiveness": 7  or  persuasiveness: 7
+    let patterns = [
+        format!("\"{field}\": "),
+        format!("\"{field}\":"),
+        format!("{field}: "),
+        format!("{field}:"),
+    ];
+    for pat in &patterns {
+        if let Some(idx) = text.find(pat.as_str()) {
+            let rest = &text[idx + pat.len()..];
+            let trimmed = rest.trim_start();
+            // Read digits
+            let digits: String = trimmed.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(n) = digits.parse::<i32>() {
+                if (1..=10).contains(&n) {
+                    return Some(n);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_text_field(text: &str, field: &str) -> String {
+    let patterns = [
+        format!("\"{field}\": \""),
+        format!("\"{field}\":\""),
+    ];
+    for pat in &patterns {
+        if let Some(idx) = text.find(pat.as_str()) {
+            let rest = &text[idx + pat.len()..];
+            // Find closing quote (not escaped)
+            let mut result = String::new();
+            let mut escaped = false;
+            for ch in rest.chars() {
+                if escaped {
+                    result.push(ch);
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    break;
+                } else {
+                    result.push(ch);
+                }
+            }
+            if !result.is_empty() {
+                return result;
+            }
+        }
+    }
+    String::new()
+}
+
+fn parse_scorecard_response(response: &str) -> Option<SparringScorecard> {
+    // Strip markdown fences if present
+    let cleaned = {
+        let s = response.trim();
+        let s = if let Some(stripped) = s.strip_prefix("```json") {
+            stripped
+        } else if let Some(stripped) = s.strip_prefix("```") {
+            stripped
+        } else {
+            s
+        };
+        let s = if let Some(stripped) = s.strip_suffix("```") {
+            stripped
+        } else {
+            s
+        };
+        s.trim()
+    };
+
+    // Try clean JSON parse first
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(cleaned) {
+        let human = val.get("human");
+        let ai = val.get("ai");
+
+        let get_score = |obj: Option<&serde_json::Value>, key: &str| -> Option<i32> {
+            obj?.get(key)?.as_i64().and_then(|n| {
+                let n = n as i32;
+                if (1..=10).contains(&n) { Some(n) } else { None }
+            })
+        };
+
+        let hp = get_score(human, "persuasiveness");
+        let he = get_score(human, "evidence");
+        let hc = get_score(human, "coherence");
+        let hr = get_score(human, "rebuttal");
+        let ap = get_score(ai, "persuasiveness");
+        let ae = get_score(ai, "evidence");
+        let ac = get_score(ai, "coherence");
+        let ar = get_score(ai, "rebuttal");
+
+        let scores = [hp, he, hc, hr, ap, ae, ac, ar];
+        let found = scores.iter().filter(|s| s.is_some()).count();
+
+        if found >= 6 {
+            let get_text = |key: &str| -> String {
+                val.get(key)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            };
+            return Some(SparringScorecard {
+                debate_id: 0,
+                human_persuasiveness: hp.unwrap_or(5),
+                human_evidence: he.unwrap_or(5),
+                human_coherence: hc.unwrap_or(5),
+                human_rebuttal: hr.unwrap_or(5),
+                ai_persuasiveness: ap.unwrap_or(5),
+                ai_evidence: ae.unwrap_or(5),
+                ai_coherence: ac.unwrap_or(5),
+                ai_rebuttal: ar.unwrap_or(5),
+                strongest_human_point: get_text("strongest_human_point"),
+                weakest_human_point: get_text("weakest_human_point"),
+                missed_argument: get_text("missed_argument"),
+                improvement_tip: get_text("improvement_tip"),
+                raw_judge_output: String::new(),
+            });
+        }
+    }
+
+    // Fallback: regex-style field-by-field extraction from raw text
+    let hp = extract_score_from_text(cleaned, "persuasiveness");
+    // For AI persuasiveness, search after the "ai" section marker
+    let ai_section_start = cleaned.find("\"ai\"").unwrap_or(0);
+    let human_section = &cleaned[..ai_section_start.max(cleaned.len() / 2)];
+    let ai_section = if ai_section_start > 0 { &cleaned[ai_section_start..] } else { cleaned };
+
+    let h_persuasiveness = extract_score_from_text(human_section, "persuasiveness")
+        .or(extract_score_from_text(cleaned, "persuasiveness"));
+    let h_evidence = extract_score_from_text(human_section, "evidence");
+    let h_coherence = extract_score_from_text(human_section, "coherence");
+    let h_rebuttal = extract_score_from_text(human_section, "rebuttal");
+    let a_persuasiveness = extract_score_from_text(ai_section, "persuasiveness").or(hp);
+    let a_evidence = extract_score_from_text(ai_section, "evidence");
+    let a_coherence = extract_score_from_text(ai_section, "coherence");
+    let a_rebuttal = extract_score_from_text(ai_section, "rebuttal");
+
+    let scores = [
+        h_persuasiveness, h_evidence, h_coherence, h_rebuttal,
+        a_persuasiveness, a_evidence, a_coherence, a_rebuttal,
+    ];
+    let found = scores.iter().filter(|s| s.is_some()).count();
+
+    if found < 6 {
+        return None;
+    }
+
+    Some(SparringScorecard {
+        debate_id: 0,
+        human_persuasiveness: h_persuasiveness.unwrap_or(5),
+        human_evidence: h_evidence.unwrap_or(5),
+        human_coherence: h_coherence.unwrap_or(5),
+        human_rebuttal: h_rebuttal.unwrap_or(5),
+        ai_persuasiveness: a_persuasiveness.unwrap_or(5),
+        ai_evidence: a_evidence.unwrap_or(5),
+        ai_coherence: a_coherence.unwrap_or(5),
+        ai_rebuttal: a_rebuttal.unwrap_or(5),
+        strongest_human_point: extract_text_field(cleaned, "strongest_human_point"),
+        weakest_human_point: extract_text_field(cleaned, "weakest_human_point"),
+        missed_argument: extract_text_field(cleaned, "missed_argument"),
+        improvement_tip: extract_text_field(cleaned, "improvement_tip"),
+        raw_judge_output: String::new(),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Scorecard commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn request_scorecard(
+    app: tauri::AppHandle,
+    debate_id: i64,
+    judge_model_id: i64,
+) -> Result<SparringScorecard, String> {
+    // 1. Validate debate exists, mode='sparring', status='completed'
+    let (topic, human_side, model_a_id, status, mode): (String, String, i64, String, String) = {
+        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        conn.query_row(
+            "SELECT topic, human_side, model_a_id, status, mode FROM debates WHERE id = ?1",
+            rusqlite::params![debate_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .map_err(|e| format!("debate not found (id={debate_id}): {e}"))?
+    };
+
+    if mode != "sparring" {
+        return Err(format!("Debate {debate_id} is not a sparring debate (mode='{mode}')"));
+    }
+    if status != "completed" {
+        return Err(format!(
+            "Debate {debate_id} is not completed (status='{status}')"
+        ));
+    }
+
+    // 2. Check no existing scorecard
+    {
+        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        let existing: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sparring_scorecards WHERE debate_id = ?1",
+                rusqlite::params![debate_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("scorecard check error: {e}"))?;
+        if existing > 0 {
+            return Err(format!("Scorecard already exists for debate {debate_id}"));
+        }
+    }
+
+    // 3. Fetch judge model name
+    let judge_model_name: String = {
+        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        conn.query_row(
+            "SELECT name FROM models WHERE id = ?1",
+            rusqlite::params![judge_model_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("judge model not found (id={judge_model_id}): {e}"))?
+    };
+
+    // 4. Load full transcript
+    let history = load_history(debate_id)?;
+
+    // 5. Build judge prompt
+    let judge_prompt =
+        crate::prompts::build_scorecard_judge_prompt(&topic, &human_side, &history);
+
+    let req = GenerateRequest {
+        model: judge_model_name,
+        prompt: judge_prompt,
+        system: Some("You are a strict but impartial debate judge. Output only valid JSON.".into()),
+        num_predict: Some(512),
+        temperature: Some(0.1),
+    };
+
+    // 6. Stream and collect silently (no UI events)
+    let rx = ollama::generate_stream(req).await.map_err(|e| format!("judge stream start: {e}"))?;
+    let mut buffer = String::new();
+    let mut rx = rx;
+    loop {
+        match rx.recv().await {
+            Some(Ok(c)) => {
+                if let Some(ref text) = c.response {
+                    buffer.push_str(text);
+                }
+                if c.done {
+                    break;
+                }
+            }
+            Some(Err(e)) => return Err(format!("judge stream error: {e}")),
+            None => break,
+        }
+    }
+
+    // 7. Parse response — fallback to zero scorecard if unparseable
+    let mut scorecard = parse_scorecard_response(&buffer).unwrap_or(SparringScorecard {
+        debate_id: 0,
+        human_persuasiveness: 5,
+        human_evidence: 5,
+        human_coherence: 5,
+        human_rebuttal: 5,
+        ai_persuasiveness: 5,
+        ai_evidence: 5,
+        ai_coherence: 5,
+        ai_rebuttal: 5,
+        strongest_human_point: String::new(),
+        weakest_human_point: String::new(),
+        missed_argument: String::new(),
+        improvement_tip: String::new(),
+        raw_judge_output: String::new(),
+    });
+    scorecard.debate_id = debate_id;
+    scorecard.raw_judge_output = buffer.clone();
+
+    // 8. Transaction: insert scorecard, update debate winner, update Elo
+    let human_total =
+        scorecard.human_persuasiveness
+        + scorecard.human_evidence
+        + scorecard.human_coherence
+        + scorecard.human_rebuttal;
+    let ai_total =
+        scorecard.ai_persuasiveness
+        + scorecard.ai_evidence
+        + scorecard.ai_coherence
+        + scorecard.ai_rebuttal;
+
+    let winner = if human_total > ai_total {
+        "human"
+    } else if ai_total > human_total {
+        "model_a"
+    } else {
+        "draw"
+    };
+
+    // Read current Elo ratings
+    let (user_elo, user_total_debates): (f64, i64) = {
+        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        conn.query_row(
+            "SELECT elo_rating, total_debates FROM user_stats WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| format!("user_stats query error: {e}"))?
+    };
+
+    let (model_elo, model_total_debates): (f64, i64) = {
+        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        conn.query_row(
+            "SELECT elo_rating, total_debates FROM models WHERE id = ?1",
+            rusqlite::params![model_a_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| format!("model elo query error: {e}"))?
+    };
+
+    // Outcome from user perspective
+    let outcome = match winner {
+        "human" => crate::elo::Outcome::Win,
+        "model_a" => crate::elo::Outcome::Loss,
+        _ => crate::elo::Outcome::Draw,
+    };
+
+    let (new_user_elo, new_model_elo, _k_user, k_model) = crate::elo::update_ratings(
+        user_elo,
+        model_elo,
+        outcome,
+        user_total_debates as u32,
+        model_total_debates as u32,
+    );
+
+    let (user_wins, user_losses, user_draws) = match winner {
+        "human" => (1i64, 0i64, 0i64),
+        "model_a" => (0i64, 1i64, 0i64),
+        _ => (0i64, 0i64, 1i64),
+    };
+
+    // Clamp scores to 1-10 for DB constraint
+    let clamp = |v: i32| v.clamp(1, 10);
+
+    {
+        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        conn.execute_batch("BEGIN").map_err(|e| format!("begin transaction: {e}"))?;
+
+        let result = (|| -> Result<(), String> {
+            // Insert scorecard
+            conn.execute(
+                "INSERT INTO sparring_scorecards
+                    (debate_id, human_persuasiveness, human_evidence, human_coherence, human_rebuttal,
+                     ai_persuasiveness, ai_evidence, ai_coherence, ai_rebuttal,
+                     strongest_human_point, weakest_human_point, missed_argument, improvement_tip, raw_judge_output)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                rusqlite::params![
+                    debate_id,
+                    clamp(scorecard.human_persuasiveness),
+                    clamp(scorecard.human_evidence),
+                    clamp(scorecard.human_coherence),
+                    clamp(scorecard.human_rebuttal),
+                    clamp(scorecard.ai_persuasiveness),
+                    clamp(scorecard.ai_evidence),
+                    clamp(scorecard.ai_coherence),
+                    clamp(scorecard.ai_rebuttal),
+                    scorecard.strongest_human_point,
+                    scorecard.weakest_human_point,
+                    scorecard.missed_argument,
+                    scorecard.improvement_tip,
+                    buffer,
+                ],
+            )
+            .map_err(|e| format!("insert scorecard: {e}"))?;
+
+            // Update debate winner
+            conn.execute(
+                "UPDATE debates SET winner = ?1, status = 'completed' WHERE id = ?2",
+                rusqlite::params![winner, debate_id],
+            )
+            .map_err(|e| format!("update debate winner: {e}"))?;
+
+            // Update user_stats
+            conn.execute(
+                "UPDATE user_stats SET
+                    elo_rating = ?1,
+                    total_debates = total_debates + 1,
+                    wins = wins + ?2,
+                    losses = losses + ?3,
+                    draws = draws + ?4
+                 WHERE id = 1",
+                rusqlite::params![new_user_elo, user_wins, user_losses, user_draws],
+            )
+            .map_err(|e| format!("update user_stats: {e}"))?;
+
+            // Update model elo (total_debates only — arena stats untouched)
+            conn.execute(
+                "UPDATE models SET
+                    elo_rating = ?1,
+                    total_debates = total_debates + 1,
+                    last_used_at = datetime('now')
+                 WHERE id = ?2",
+                rusqlite::params![new_model_elo, model_a_id],
+            )
+            .map_err(|e| format!("update model elo: {e}"))?;
+
+            // Insert elo_history for model
+            conn.execute(
+                "INSERT INTO elo_history (model_id, debate_id, rating_before, rating_after, k_factor)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![model_a_id, debate_id, model_elo, new_model_elo, k_model],
+            )
+            .map_err(|e| format!("insert elo_history: {e}"))?;
+
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => {
+                conn.execute_batch("COMMIT").map_err(|e| format!("commit transaction: {e}"))?;
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(e);
+            }
+        }
+    }
+
+    // Suppress unused variable warning for app — reserved for future events
+    let _ = &app;
+
+    Ok(scorecard)
+}
+
+#[tauri::command]
+pub async fn get_scorecard(debate_id: i64) -> Result<Option<SparringScorecard>, String> {
+    let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+    let result = conn.query_row(
+        "SELECT debate_id, human_persuasiveness, human_evidence, human_coherence, human_rebuttal,
+                ai_persuasiveness, ai_evidence, ai_coherence, ai_rebuttal,
+                strongest_human_point, weakest_human_point, missed_argument, improvement_tip, raw_judge_output
+         FROM sparring_scorecards WHERE debate_id = ?1",
+        rusqlite::params![debate_id],
+        |row| {
+            Ok(SparringScorecard {
+                debate_id: row.get(0)?,
+                human_persuasiveness: row.get(1)?,
+                human_evidence: row.get(2)?,
+                human_coherence: row.get(3)?,
+                human_rebuttal: row.get(4)?,
+                ai_persuasiveness: row.get(5)?,
+                ai_evidence: row.get(6)?,
+                ai_coherence: row.get(7)?,
+                ai_rebuttal: row.get(8)?,
+                strongest_human_point: row.get::<_, Option<String>>(9)?.unwrap_or_default(),
+                weakest_human_point: row.get::<_, Option<String>>(10)?.unwrap_or_default(),
+                missed_argument: row.get::<_, Option<String>>(11)?.unwrap_or_default(),
+                improvement_tip: row.get::<_, Option<String>>(12)?.unwrap_or_default(),
+                raw_judge_output: row.get::<_, Option<String>>(13)?.unwrap_or_default(),
+            })
+        },
+    );
+
+    match result {
+        Ok(sc) => Ok(Some(sc)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(format!("get_scorecard query error: {e}")),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1108,5 +1613,57 @@ mod tests {
         assert_eq!(sparring_phase_for_round(9), "argument");
         assert_eq!(sparring_phase_for_round(0), "argument");
         assert_eq!(sparring_phase_index(10), 0);
+    }
+
+    #[test]
+    fn parse_scorecard_clean_json() {
+        let json = r#"{
+            "human": { "persuasiveness": 7, "evidence": 6, "coherence": 8, "rebuttal": 5 },
+            "ai": { "persuasiveness": 8, "evidence": 7, "coherence": 7, "rebuttal": 6 },
+            "strongest_human_point": "The economic data was compelling.",
+            "weakest_human_point": "The opening lacked structure.",
+            "missed_argument": "Historical precedent was never addressed.",
+            "improvement_tip": "Use more concrete examples early on."
+        }"#;
+        let result = parse_scorecard_response(json);
+        assert!(result.is_some(), "should parse clean JSON");
+        let sc = result.unwrap();
+        assert_eq!(sc.human_persuasiveness, 7);
+        assert_eq!(sc.human_evidence, 6);
+        assert_eq!(sc.human_coherence, 8);
+        assert_eq!(sc.human_rebuttal, 5);
+        assert_eq!(sc.ai_persuasiveness, 8);
+        assert_eq!(sc.ai_evidence, 7);
+        assert_eq!(sc.ai_coherence, 7);
+        assert_eq!(sc.ai_rebuttal, 6);
+        assert_eq!(sc.strongest_human_point, "The economic data was compelling.");
+        assert_eq!(sc.improvement_tip, "Use more concrete examples early on.");
+    }
+
+    #[test]
+    fn parse_scorecard_malformed_json() {
+        // JSON wrapped in markdown code fences — regex fallback must handle
+        let response = r#"```json
+{
+  "human": { "persuasiveness": 6, "evidence": 7, "coherence": 6, "rebuttal": 5 },
+  "ai": { "persuasiveness": 9, "evidence": 8, "coherence": 8, "rebuttal": 7 },
+  "strongest_human_point": "Good opening argument.",
+  "weakest_human_point": "Rebuttal was weak.",
+  "missed_argument": "Cost-benefit analysis missing.",
+  "improvement_tip": "Cite sources more often."
+}
+```"#;
+        let result = parse_scorecard_response(response);
+        assert!(result.is_some(), "should parse markdown-wrapped JSON");
+        let sc = result.unwrap();
+        assert_eq!(sc.human_persuasiveness, 6);
+        assert_eq!(sc.ai_persuasiveness, 9);
+    }
+
+    #[test]
+    fn parse_scorecard_garbage() {
+        let garbage = "I cannot evaluate this debate. The transcript was too short to judge fairly. Please try again with more content.";
+        let result = parse_scorecard_response(garbage);
+        assert!(result.is_none(), "garbage input should return None");
     }
 }

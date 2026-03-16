@@ -1,9 +1,10 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ModelSelector } from "../components/ModelSelector";
 import { useAppStore } from "../stores/appStore";
 import { useSparringStore } from "../stores/sparringStore";
 import { useSparringEvents } from "../hooks/useSparringEvents";
+import type { UserStats, SparringScorecard } from "../types";
 
 type Difficulty = "casual" | "competitive" | "expert";
 type Side = "pro" | "con";
@@ -19,7 +20,6 @@ const PHASES = ["Opening", "Rebuttal 1", "Rebuttal 2", "Closing"] as const;
 function phaseIndex(stage: string, round: number): number {
   if (stage === "opening") return 0;
   if (stage === "closing") return 3;
-  // rebuttal: rounds 3-4 = index 1, rounds 5-6 = index 2
   return round <= 4 ? 1 : 2;
 }
 
@@ -27,17 +27,201 @@ function wordCount(text: string): number {
   return text.trim().split(/\s+/).filter(Boolean).length;
 }
 
+const DIMENSIONS: { key: "persuasiveness" | "evidence" | "coherence" | "rebuttal"; label: string }[] = [
+  { key: "persuasiveness", label: "Persuasiveness" },
+  { key: "evidence", label: "Evidence" },
+  { key: "coherence", label: "Coherence" },
+  { key: "rebuttal", label: "Rebuttal" },
+];
+
+function ScorecardView() {
+  const { scorecard } = useSparringStore();
+  if (!scorecard) return null;
+
+  const parseFailed =
+    scorecard.human_persuasiveness === 5 &&
+    scorecard.ai_persuasiveness === 5 &&
+    scorecard.human_evidence === 5 &&
+    scorecard.ai_evidence === 5 &&
+    scorecard.human_coherence === 5 &&
+    scorecard.ai_coherence === 5 &&
+    scorecard.human_rebuttal === 5 &&
+    scorecard.ai_rebuttal === 5 &&
+    !scorecard.strongest_human_point;
+
+  if (parseFailed) {
+    return (
+      <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/50 p-6">
+        <p className="mb-3 text-sm font-semibold text-amber-400">
+          Judge response could not be parsed into a scorecard.
+        </p>
+        <details className="text-sm text-slate-400">
+          <summary className="cursor-pointer text-xs font-medium uppercase tracking-wider text-slate-500 hover:text-slate-300">
+            Raw judge output
+          </summary>
+          <pre className="mt-3 whitespace-pre-wrap break-words rounded-lg bg-slate-800 p-4 text-xs leading-relaxed text-slate-300">
+            {scorecard.raw_judge_output}
+          </pre>
+        </details>
+      </div>
+    );
+  }
+
+  const humanTotal =
+    scorecard.human_persuasiveness +
+    scorecard.human_evidence +
+    scorecard.human_coherence +
+    scorecard.human_rebuttal;
+  const aiTotal =
+    scorecard.ai_persuasiveness +
+    scorecard.ai_evidence +
+    scorecard.ai_coherence +
+    scorecard.ai_rebuttal;
+
+  function getBarColor(humanScore: number, aiScore: number, isHuman: boolean): string {
+    if (humanScore === aiScore) return "bg-amber-500";
+    if (isHuman) return humanScore > aiScore ? "bg-emerald-500" : "bg-red-500";
+    return aiScore > humanScore ? "bg-emerald-500" : "bg-red-500";
+  }
+
+  const humanScores: Record<string, number> = {
+    persuasiveness: scorecard.human_persuasiveness,
+    evidence: scorecard.human_evidence,
+    coherence: scorecard.human_coherence,
+    rebuttal: scorecard.human_rebuttal,
+  };
+  const aiScores: Record<string, number> = {
+    persuasiveness: scorecard.ai_persuasiveness,
+    evidence: scorecard.ai_evidence,
+    coherence: scorecard.ai_coherence,
+    rebuttal: scorecard.ai_rebuttal,
+  };
+
+  return (
+    <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/50 p-6">
+      <div className="mb-6 flex items-center justify-between">
+        <h3 className="text-lg font-black tracking-tight text-slate-100">Scorecard</h3>
+        <div className="flex gap-6 text-sm">
+          <div className="text-center">
+            <span className="block font-mono text-2xl font-black text-gold-400">{humanTotal}</span>
+            <span className="text-xs text-slate-500">You</span>
+          </div>
+          <div className="flex items-center text-slate-600">vs</div>
+          <div className="text-center">
+            <span className="block font-mono text-2xl font-black text-slate-300">{aiTotal}</span>
+            <span className="text-xs text-slate-500">AI</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Score bars */}
+      <div className="mb-6 flex flex-col gap-3">
+        {DIMENSIONS.map(({ key, label }) => {
+          const h = humanScores[key] ?? 0;
+          const a = aiScores[key] ?? 0;
+          return (
+            <div key={key} className="flex items-center gap-3">
+              {/* Human score */}
+              <span className="w-8 text-right font-mono text-sm font-bold text-slate-300">{h}</span>
+              {/* Human bar (right-aligned) */}
+              <div className="flex flex-1 justify-end">
+                <div className="flex w-full justify-end">
+                  <div
+                    className={`h-4 rounded-l transition-all ${getBarColor(h, a, true)}`}
+                    style={{ width: `${(h / 10) * 100}%` }}
+                  />
+                </div>
+              </div>
+              {/* Label */}
+              <span className="w-28 text-center text-xs font-medium text-slate-400">{label}</span>
+              {/* AI bar (left-aligned) */}
+              <div className="flex flex-1 justify-start">
+                <div
+                  className={`h-4 rounded-r transition-all ${getBarColor(h, a, false)}`}
+                  style={{ width: `${(a / 10) * 100}%` }}
+                />
+              </div>
+              {/* AI score */}
+              <span className="w-8 font-mono text-sm font-bold text-slate-300">{a}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Labels row */}
+      <div className="mb-6 flex justify-between text-xs font-semibold text-slate-500">
+        <span>YOU</span>
+        <span>AI</span>
+      </div>
+
+      {/* Feedback cards */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-4">
+          <span className="mb-2 block text-xs font-bold uppercase tracking-wider text-gold-400">
+            Strongest Point
+          </span>
+          <p className="text-sm leading-relaxed text-slate-300">{scorecard.strongest_human_point}</p>
+        </div>
+        <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-4">
+          <span className="mb-2 block text-xs font-bold uppercase tracking-wider text-gold-400">
+            Weakest Point
+          </span>
+          <p className="text-sm leading-relaxed text-slate-300">{scorecard.weakest_human_point}</p>
+        </div>
+        <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-4">
+          <span className="mb-2 block text-xs font-bold uppercase tracking-wider text-gold-400">
+            Missed Argument
+          </span>
+          <p className="text-sm leading-relaxed text-slate-300">{scorecard.missed_argument}</p>
+        </div>
+        <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-4">
+          <span className="mb-2 block text-xs font-bold uppercase tracking-wider text-gold-400">
+            Improvement Tip
+          </span>
+          <p className="text-sm leading-relaxed text-slate-300">{scorecard.improvement_tip}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SetupView() {
   const { models } = useAppStore();
-  const { startSparring } = useSparringStore();
+  const { startSparring, setJudgeModelId, judgeModelId } = useSparringStore();
 
   const [topic, setTopic] = useState("");
   const [side, setSide] = useState<Side>("pro");
   const [modelId, setModelId] = useState<number | null>(null);
+  const [localJudgeModelId, setLocalJudgeModelId] = useState<number | null>(null);
   const [difficulty, setDifficulty] = useState<Difficulty>("competitive");
   const [starting, setStarting] = useState(false);
+  const [userStats, setUserStats] = useState<UserStats | null>(null);
+
+  useEffect(() => {
+    invoke<UserStats>("get_user_stats")
+      .then((stats) => {
+        if (stats.total_debates > 0) setUserStats(stats);
+      })
+      .catch(() => {
+        // ignore — no sparring history yet
+      });
+  }, []);
+
+  // Keep the store's judgeModelId in sync with local state
+  useEffect(() => {
+    if (localJudgeModelId !== null) {
+      setJudgeModelId(localJudgeModelId);
+    }
+  }, [localJudgeModelId, setJudgeModelId]);
+
+  // Restore local state from store on mount (e.g. if component remounts)
+  useEffect(() => {
+    if (judgeModelId !== null) setLocalJudgeModelId(judgeModelId);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const canStart = topic.trim().length > 0 && modelId !== null;
+  const judgeIsSameAsOpponent = localJudgeModelId !== null && localJudgeModelId === modelId;
 
   const handleStart = async () => {
     if (!canStart || modelId === null) return;
@@ -60,6 +244,25 @@ function SetupView() {
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-8">
+      {/* User stats banner */}
+      {userStats && (
+        <div className="flex items-center gap-6 border-b border-slate-800 pb-4">
+          <span className="font-mono text-lg font-black text-gold-400">
+            {userStats.elo_rating.toFixed(0)}
+          </span>
+          <span className="text-xs font-light text-slate-500">Your Rating</span>
+          <div className="flex gap-4 text-xs text-slate-500">
+            <span>
+              <span className="font-semibold text-emerald-400">W {userStats.wins}</span>
+              {" / "}
+              <span className="font-semibold text-red-400">L {userStats.losses}</span>
+              {" / "}
+              <span className="font-semibold text-slate-400">D {userStats.draws}</span>
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Title */}
       <div className="text-center">
         <h2 className="text-3xl font-black tracking-tight text-slate-100">
@@ -120,6 +323,21 @@ function SetupView() {
         onSelect={setModelId}
         label="AI Opponent"
       />
+
+      {/* Judge Model Selector */}
+      <div>
+        <ModelSelector
+          models={models}
+          selectedId={localJudgeModelId}
+          onSelect={setLocalJudgeModelId}
+          label="Judge Model"
+        />
+        {judgeIsSameAsOpponent && (
+          <p className="mt-1.5 text-xs text-amber-400">
+            Same model as opponent — scores may be biased
+          </p>
+        )}
+      </div>
 
       {/* Difficulty */}
       <div>
@@ -200,12 +418,14 @@ function PhaseProgress({ currentStage, currentRound, isComplete }: { currentStag
 function DebateView() {
   const aiPanelRef = useRef<HTMLDivElement>(null);
   const [humanInput, setHumanInput] = useState("");
+  const [requestingScorecard, setRequestingScorecard] = useState(false);
 
   const {
     phase,
     debateId,
     humanSide,
     modelId,
+    judgeModelId,
     difficulty,
     currentStage,
     currentRound,
@@ -225,7 +445,7 @@ function DebateView() {
   const nearLimit = words >= wordLimit * 0.8;
   const isHumanTurn = phase === "human_turn";
   const isAiTurn = phase === "ai_turn";
-  const isTerminal = phase === "complete" || phase === "error" || phase === "aborted";
+  const isTerminal = phase === "complete" || phase === "scoring" || phase === "scored" || phase === "error" || phase === "aborted";
   const canSubmit = isHumanTurn && humanInput.trim().length > 0 && !overLimit;
 
   const humanRounds = rounds.filter((r) => r.speaker === "human");
@@ -247,6 +467,24 @@ function DebateView() {
   const handleAbort = () => {
     if (debateId !== null) {
       void invoke("abort_sparring", { debateId });
+    }
+  };
+
+  const handleRequestScorecard = async () => {
+    if (debateId === null || judgeModelId === null) return;
+    setRequestingScorecard(true);
+    useSparringStore.getState().startScoring();
+    try {
+      const result = await invoke<SparringScorecard>("request_scorecard", {
+        debateId,
+        judgeModelId,
+      });
+      useSparringStore.getState().setScorecard(result);
+    } catch (err) {
+      console.error("request_scorecard error:", err);
+      useSparringStore.getState().setError(String(err));
+    } finally {
+      setRequestingScorecard(false);
     }
   };
 
@@ -273,6 +511,16 @@ function DebateView() {
         {phase === "complete" && (
           <span className="rounded-full bg-emerald-500/10 px-4 py-1 text-xs font-semibold text-emerald-400">
             Debate Complete
+          </span>
+        )}
+        {phase === "scoring" && (
+          <span className="animate-pulse rounded-full bg-slate-800 px-4 py-1 text-xs font-semibold text-slate-400">
+            Judge is evaluating...
+          </span>
+        )}
+        {phase === "scored" && (
+          <span className="rounded-full bg-emerald-500/10 px-4 py-1 text-xs font-semibold text-emerald-400">
+            Scorecard Ready
           </span>
         )}
       </div>
@@ -369,9 +617,17 @@ function DebateView() {
           )}
 
           {phase === "complete" && (
-            <span className="rounded bg-emerald-500/10 px-2 py-1 text-xs font-medium text-emerald-400">
-              Complete
-            </span>
+            <div className="flex flex-col items-center gap-2">
+              {judgeModelId !== null && (
+                <button
+                  onClick={() => void handleRequestScorecard()}
+                  disabled={requestingScorecard}
+                  className="rounded-lg bg-gold-500 px-3 py-1.5 text-xs font-bold text-slate-950 transition-all hover:bg-gold-400 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Scorecard
+                </button>
+              )}
+            </div>
           )}
 
           {phase === "error" && (
@@ -450,6 +706,9 @@ function DebateView() {
           </div>
         </div>
       </div>
+
+      {/* Scorecard (rendered below the split pane when scored) */}
+      {phase === "scored" && <ScorecardView />}
     </div>
   );
 }

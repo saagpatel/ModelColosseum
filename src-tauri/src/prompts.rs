@@ -120,6 +120,69 @@ pub fn build_sparring_system_prompt(
     prompt
 }
 
+pub fn build_scorecard_judge_prompt(
+    topic: &str,
+    human_side: &str,
+    history: &[RoundContent],
+) -> String {
+    let human_position = match human_side {
+        "pro" => "IN FAVOR OF",
+        "con" => "AGAINST",
+        _ => "ON",
+    };
+    let ai_position = match human_side {
+        "pro" => "AGAINST",
+        "con" => "IN FAVOR OF",
+        _ => "ON",
+    };
+
+    let mut prompt = format!(
+        "You are an impartial debate judge. Evaluate the following debate on the topic: \"{topic}\"\n\n\
+         The HUMAN argued {human_position} the topic.\n\
+         The AI argued {ai_position} the topic.\n\n"
+    );
+
+    if !history.is_empty() {
+        prompt.push_str("## Full Debate Transcript\n\n");
+        for entry in history {
+            let speaker_label = match entry.speaker.as_str() {
+                "human" => "HUMAN",
+                "model_a" => "AI",
+                _ => &entry.speaker,
+            };
+            prompt.push_str(&format!(
+                "[Round {} - {}]: {}\n\n",
+                entry.round_number, speaker_label, entry.content
+            ));
+        }
+    }
+
+    prompt.push_str(
+        "## Scoring Instructions\n\n\
+         Score each debater on four dimensions (1 = poor, 10 = excellent):\n\
+         - persuasiveness: How convincing and rhetorically effective were their arguments?\n\
+         - evidence: Did they use facts, examples, and logical reasoning effectively?\n\
+         - coherence: Were their arguments well-structured and internally consistent?\n\
+         - rebuttal: How effectively did they counter the opponent's specific points?\n\n\
+         Also provide:\n\
+         - strongest_human_point: The single most compelling argument the human made.\n\
+         - weakest_human_point: The human's least convincing argument or biggest logical gap.\n\
+         - missed_argument: An important argument the human failed to make.\n\
+         - improvement_tip: One concrete, actionable tip to help the human debate better.\n\n\
+         Output ONLY valid JSON with this exact structure, no markdown, no explanation:\n\
+         {\n\
+           \"human\": { \"persuasiveness\": 1-10, \"evidence\": 1-10, \"coherence\": 1-10, \"rebuttal\": 1-10 },\n\
+           \"ai\": { \"persuasiveness\": 1-10, \"evidence\": 1-10, \"coherence\": 1-10, \"rebuttal\": 1-10 },\n\
+           \"strongest_human_point\": \"...\",\n\
+           \"weakest_human_point\": \"...\",\n\
+           \"missed_argument\": \"...\",\n\
+           \"improvement_tip\": \"...\"\n\
+         }"
+    );
+
+    prompt
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,6 +317,77 @@ mod tests {
         assert!(
             !prompt.contains("Debate transcript"),
             "empty history should not have transcript section"
+        );
+    }
+
+    #[test]
+    fn scorecard_judge_prompt_contains_transcript() {
+        let history = vec![
+            RoundContent {
+                speaker: "human".into(),
+                content: "AI creates more jobs than it destroys.".into(),
+                round_number: 1,
+            },
+            RoundContent {
+                speaker: "model_a".into(),
+                content: "Historical evidence shows automation displaces workers.".into(),
+                round_number: 2,
+            },
+        ];
+        let prompt = build_scorecard_judge_prompt("AI and employment", "pro", &history);
+        assert!(
+            prompt.contains("[Round 1 - HUMAN]"),
+            "should label human round"
+        );
+        assert!(prompt.contains("[Round 2 - AI]"), "should label AI round");
+        assert!(
+            prompt.contains("AI creates more jobs"),
+            "should include human content"
+        );
+        assert!(
+            prompt.contains("Historical evidence"),
+            "should include AI content"
+        );
+        assert!(
+            prompt.contains("IN FAVOR OF"),
+            "human side should be IN FAVOR OF for pro"
+        );
+    }
+
+    #[test]
+    fn scorecard_judge_prompt_contains_json_template() {
+        let prompt = build_scorecard_judge_prompt("Free will", "con", &[]);
+        assert!(
+            prompt.contains("\"persuasiveness\""),
+            "should contain persuasiveness field"
+        );
+        assert!(
+            prompt.contains("\"evidence\""),
+            "should contain evidence field"
+        );
+        assert!(
+            prompt.contains("\"coherence\""),
+            "should contain coherence field"
+        );
+        assert!(
+            prompt.contains("\"rebuttal\""),
+            "should contain rebuttal field"
+        );
+        assert!(
+            prompt.contains("\"strongest_human_point\""),
+            "should contain strongest_human_point"
+        );
+        assert!(
+            prompt.contains("\"improvement_tip\""),
+            "should contain improvement_tip"
+        );
+        assert!(
+            prompt.contains("Output ONLY valid JSON"),
+            "should instruct JSON-only output"
+        );
+        assert!(
+            prompt.contains("AGAINST"),
+            "con human_side should map to AGAINST"
         );
     }
 }

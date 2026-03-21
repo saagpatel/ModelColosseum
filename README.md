@@ -123,8 +123,8 @@ ollama serve
 
 ```bash
 # Clone
-git clone https://github.com/saagar210/model-colosseum.git
-cd model-colosseum
+git clone https://github.com/saagpatel/ModelColosseum.git
+cd ModelColosseum
 
 # Install frontend dependencies
 pnpm install

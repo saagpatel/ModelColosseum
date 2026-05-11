@@ -1,0 +1,18 @@
+name: Test (Rust)
+on:
+  push:
+    branches: [main, 'feat/**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: cd src-tauri && cargo clippy -- -D warnings
+      - run: cd src-tauri && cargo nextest run || cargo test

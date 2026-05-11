@@ -1,0 +1,4 @@
+# codex-os-managed
+pnpm install
+pnpm run build
+cargo test --manifest-path src-tauri/Cargo.toml

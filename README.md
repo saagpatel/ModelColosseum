@@ -9,11 +9,15 @@ Model Colosseum is a local-first macOS desktop app that turns your Ollama models
 ## Features
 
 - **Arena Mode** — freestyle, formal (3-phase), or Socratic debate formats across 3/5/7 rounds with simultaneous streaming
-- **Benchmark Mode** — 15-prompt battery spanning coding, creative writing, analysis, summarization, and reasoning
+- **Benchmark Mode** — custom test suites with manual scoring, auto-judge (LLM-scored), blind A/B comparison, TTFT/TPS hardware metrics, and JSON/CSV/Markdown export; ships with a 15-prompt default suite covering coding, creative writing, analysis, summarization, and reasoning
+- **Sparring Ring** — structured 4-phase human vs AI debates (casual / competitive / expert difficulty) with multi-dimension scorecards and user Elo tracking
 - **Elo ratings** — per-model ratings updated after every voted debate outcome
+- **Leaderboard** — unified model ranking with per-model Elo history charts
 - **Topic suggestions** — let one of your models brainstorm debate topics
 - **Split-pane viewer** — PRO on the left, CON on the right, both streaming in real time
 - **Vote system** — Left Wins, Draw, or Right Wins; ratings update immediately
+- **History** — full searchable record of all past arena debates
+- **Settings** — configurable Ollama URL, round counts, word limits, Elo parameters, and per-role prompt templates
 
 ## Quick Start
 
@@ -47,6 +51,7 @@ pnpm tauri build
 |-------|------------|
 | Desktop shell | Tauri 2 |
 | Backend | Rust 2021 |
+| Database | SQLite (rusqlite, WAL mode) |
 | Frontend | React 19 + TypeScript + Tailwind CSS 4 + Recharts |
 | State | Zustand 5 |
 | LLM runtime | Ollama (local) via streaming REST API |

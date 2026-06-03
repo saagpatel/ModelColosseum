@@ -11,100 +11,101 @@ what was found, what was changed, and what could not be verified.
 
 ### 1. What it is
 
-**Status:** `consistent` (intro) / `drifted` (feature list)
-**Verified by:** `src/main.tsx` routes, `src-tauri/src/lib.rs` registered commands, page files in `src/pages/`
+**Status:** `consistent`
+**Verified by:** `src/main.tsx:13–43` (all 6 routes wired: Arena, Benchmark, SparringRing,
+Leaderboard, History, Settings), `src-tauri/src/lib.rs` registered commands, README intro and
+Features list.
 
-The project description in the intro paragraph is accurate — it correctly describes a local-first
-macOS Tauri 2 app for running and rating Ollama model debates. However, the app has three major
-modes (Arena, Benchmark, Sparring Ring) and four supporting pages (Leaderboard, History, Settings,
-and the arena/debate viewer), none of which except Arena were reflected in the Features list.
-
-**Changed:** `README.md` Features section — added Sparring Ring, Leaderboard, History, and Settings
-bullets; expanded the Benchmark bullet to describe custom test suites, auto-judge, blind comparison,
-hardware metrics, and import/export (not only the default 15-prompt battery).
+All three major modes and all supporting pages match what is wired in code. The README intro
+paragraph and Features bullets are accurate.
 
 ---
 
 ### 2. Current state
 
 **Status:** `consistent`
-**Verified by:** `src/main.tsx` (all 6 routes wired), `src-tauri/src/db.rs` (13 `CREATE TABLE`
-statements), `src-tauri/src/lib.rs` (full command registration in `invoke_handler`), `#[test]`
-count across 4 Rust source files (71 occurrences of `#[cfg(test)]`/`#[test]`; 4 test-module
-wrappers = 67 test functions, matching the CLAUDE.md claim)
+**Verified by:** `src/main.tsx` (all 6 routes), `src-tauri/src/db.rs` (13 `CREATE TABLE`
+statements confirmed by grep), `#[test]` count across 4 Rust source files (67 occurrences across
+`elo.rs`, `prompts.rs`, `debate.rs`, `benchmark.rs` — matching the CLAUDE.md claim of 67 tests).
 
 All phases listed in CLAUDE.md as complete are confirmed present in code. No stubs or TODO-only
-feature flags were found in the areas checked.
+feature flags were found in the areas checked. The CLAUDE.md "v1.0.0 — Feature Complete" label is
+consistent with what the code shows.
 
 ---
 
 ### 3. Stack
 
-**Status:** `drifted`
-**Verified by:** `src-tauri/Cargo.toml` line 21 (`rusqlite = { version = "0.31", features = ["bundled"] }`),
-`src-tauri/src/db.rs` line 21 (`PRAGMA journal_mode=WAL`)
+**Status:** `consistent`
+**Verified by:** `package.json` (React 19, TypeScript 5, Tailwind 4, Zustand 5, React Router 7,
+Recharts 2, Tauri 2 CLI), `src-tauri/Cargo.toml` (rusqlite 0.31, reqwest 0.12, tokio 1,
+sysinfo 0.31), `src-tauri/src/db.rs:21` (`PRAGMA journal_mode=WAL`).
 
-The Tech Stack table in README.md omitted SQLite entirely, despite it being the persistence layer
-for all 13 application tables.
-
-**Changed:** `README.md` Tech Stack table — added `| Database | SQLite (rusqlite, WAL mode) |`
-row between Backend and Frontend rows.
+The security dep bump in commit `28fef3d` (openssl, rustls-webpki) touches transitive dependencies
+in `Cargo.lock` only — not the documented direct-dependency stack. No stack table update needed.
 
 ---
 
 ### 4. How to run
 
 **Status:** `consistent`
-**Verified by:** `package.json` lines 6–11 (`"dev": "vite"`, `"build": "tsc && vite build"`,
-`"tauri": "tauri"`)
+**Verified by:** `package.json:6–11` (`"dev": "vite"`, `"build": "tsc && vite build"`,
+`"test": "cd src-tauri && cargo test"`, `"tauri": "tauri"`), `.codex/verify.commands`
+(exists; contains `pnpm run build` and `cargo test --manifest-path src-tauri/Cargo.toml`).
 
-`pnpm tauri dev` and `pnpm tauri build` are correct: the `tauri` script delegates to the Tauri CLI,
-making both commands valid. Prerequisites (Rust stable, Node 20+, pnpm, Ollama) are standard for
-this stack and cannot be falsified by reading source.
+`pnpm tauri dev` and `pnpm tauri build` are valid — the `tauri` script delegates to the Tauri CLI.
+`pnpm test` correctly runs Rust tests via cargo. Prerequisites (Rust stable, Node 20+, pnpm, Ollama)
+are standard for this stack.
 
 ---
 
 ### 5. Known risks
 
 **Status:** `consistent`
-**Verified by:** cross-checking README and CLAUDE.md constraints against source
+**Verified by:** `src-tauri/src/db.rs:8–9,17` (DB path `~/.model-colosseum/colosseum.db`),
+`src-tauri/src/ollama.rs` (only local Ollama calls via reqwest).
 
 No contradictions found between documented constraints and code:
-- "macOS-only" — consistent with Tauri target config
-- "No cloud, no API keys, no telemetry" — no external HTTP calls found outside `ollama.rs` (confirmed by `reqwest` usage pattern)
-- `~/.model-colosseum/colosseum.db` path — confirmed at `src-tauri/src/db.rs:9–10`
+- `~/.model-colosseum/colosseum.db` path confirmed at `db.rs:8–9,17`.
+- "No cloud, no API keys, no telemetry" — no external HTTP calls outside `ollama.rs`.
+- "macOS-only" — consistent with Tauri configuration.
 
 ---
 
 ### 6. Next move
 
 **Status:** `unverifiable`
-**Reason:** CHANGELOG.md lists only `## [Unreleased] — Initial release`. There are no open stubs,
-explicit TODO comments, or roadmap markers visible in the files read. The CLAUDE.md marks all
-phases complete, but whether a formal v1.0.0 release has been cut cannot be determined from source
-alone without running git tag or checking the remote.
+**Reason:** No open stubs, TODO-only features, or roadmap markers visible in code. CLAUDE.md marks
+all phases complete. Whether a formal `v1.0.0` git tag or GitHub release has been cut cannot be
+determined by reading source alone.
 
 ---
 
-## Contradictions for manual review
+## Drifted claims fixed
 
-### AGENTS.md — stale session note (uneditable path, but content is accurate)
+### AGENTS.md — stale session note removed
 
-`AGENTS.md` is within the editable set, but the following note is unverifiable without a build run,
-so it was left untouched rather than removed silently:
+`AGENTS.md` Verification section contained a stale session note:
 
-> **`AGENTS.md` Verification section, last sentence:** "Current session note: Rust tests pass,
-> while frontend build is blocked until `esbuild` is approved through pnpm build approval."
+> *Before:* "Use `.codex/verify.commands` as the canonical local gate. Current session note: Rust
+> tests pass, while frontend build is blocked until `esbuild` is approved through pnpm build
+> approval."
 
-Evidence of likely staleness: `package.json` line 22–24 already contains
-`"pnpm": { "onlyBuiltDependencies": ["esbuild"] }`, which is the standard pnpm mechanism for
-approving native builds. This approval was likely applied after the note was written. A human should
-confirm the build passes and remove the session note if so.
+The cited blocker ("blocked until `esbuild` is approved") is demonstrably resolved: `package.json`
+lines 22–24 contain `"pnpm": { "onlyBuiltDependencies": ["esbuild"] }`, which is exactly the pnpm
+native-build approval mechanism the note was waiting on. The approval has been applied. The note
+dates from a prior session and was flagged in the previous reconciliation pass (`0bea6ff`) as likely
+stale; it survived commit `53d0c81` ("docs: refresh Codex communication contract") without being
+removed.
+
+> *After:* "Use `.codex/verify.commands` as the canonical local gate."
+
+**Evidence:** `package.json:22–24`.
 
 ---
 
 ## Footer
 
-Generated: **2026-05-30 20:50:27 PDT**
-Branch: `docs/truth-up-2026-05-30`
-HEAD reconciled against: `75df5df39950c9091ea056abd3327d7c4e2c2e72`
+Generated: **2026-06-02 19:32:53 PDT**
+Branch: `docs/truth-up-2026-06-02`
+HEAD reconciled against: `28fef3d78a4b11a8ebb9bf22c9bc96e360cdb806`

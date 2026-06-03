@@ -34,7 +34,7 @@ ModelColosseum is a local-first Tauri 2 desktop app for evaluating Ollama models
 
 ## Verification
 
-Use `.codex/verify.commands` as the canonical local gate. Current session note: Rust tests pass, while frontend build is blocked until `esbuild` is approved through pnpm build approval.
+Use `.codex/verify.commands` as the canonical local gate.
 
 ## Done Criteria
 

@@ -11,12 +11,12 @@
 		"tauri": "tauri"
 	},
 	"dependencies": {
-		"@tauri-apps/api": "^2.0.0",
-		"react": "^19.0.0",
-		"react-dom": "^19.0.0",
+		"@tauri-apps/api": "^2.11.1",
+		"react": "^19.2.7",
+		"react-dom": "^19.2.7",
 		"react-router": "^7.15.0",
 		"recharts": "^2.15.0",
-		"zustand": "^5.0.0"
+		"zustand": "^5.0.14"
 	},
 	"pnpm": {
 		"onlyBuiltDependencies": [
@@ -24,12 +24,12 @@
 		]
 	},
 	"devDependencies": {
-		"@tauri-apps/cli": "^2.0.0",
-		"@types/react": "^19.0.0",
+		"@tauri-apps/cli": "^2.11.3",
+		"@types/react": "^19.2.17",
 		"@types/react-dom": "^19.0.0",
 		"@vitejs/plugin-react": "^4.3.0",
-		"tailwindcss": "^4.0.0",
-		"@tailwindcss/vite": "^4.0.0",
+		"tailwindcss": "^4.3.1",
+		"@tailwindcss/vite": "^4.3.1",
 		"typescript": "^5.7.0",
 		"vite": "6.4.3"
 	}

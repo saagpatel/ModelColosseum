@@ -12,6 +12,8 @@ export interface Model {
   parameter_count: number | null;
   quantization: string | null;
   family: string | null;
+  digest: string | null;
+  size_bytes: number | null;
   elo_rating: number;
   arena_wins: number;
   arena_losses: number;
@@ -143,7 +145,21 @@ export interface BenchmarkResult {
   manual_score: number | null;
   auto_judge_score: number | null;
   auto_judge_notes: string | null;
+  repetition_index: number;
+  trial_key: string | null;
+  generation_seed: number | null;
+  trial_status: string;
   created_at: string;
+}
+
+export interface EvaluationConfig {
+  repetitions: number;
+  warmup_repetitions: number;
+  timeout_seconds: number;
+  temperature: number;
+  num_predict: number | null;
+  think: boolean;
+  seed: number | null;
 }
 
 export interface BenchmarkRunSummary {
@@ -157,6 +173,75 @@ export interface BenchmarkRunSummary {
   total_results: number;
   started_at: string;
   completed_at: string | null;
+  outcome_status: string;
+  repetitions: number;
+  failed_count: number;
+  excluded_count: number;
+  comparable: boolean;
+  comparability_notes: string | null;
+  manifest_digest: string | null;
+}
+
+export interface ConfidenceSummary {
+  sample_size: number;
+  mean: number | null;
+  lower_95: number | null;
+  upper_95: number | null;
+  sufficient_sample: boolean;
+  warning: string | null;
+}
+
+export interface CapabilityEvidence {
+  category: string;
+  model_id: number;
+  model_name: string;
+  scoring_method: string;
+  confidence: ConfidenceSummary;
+}
+
+export interface CapabilityRecommendation {
+  category: string;
+  recommended_model: string | null;
+  confidence: string;
+  reason: string;
+}
+
+export interface RunEvidence {
+  run_id: number;
+  outcome_status: string;
+  manifest_digest: string | null;
+  comparable: boolean;
+  comparability_notes: string | null;
+  planned_measured_trials: number;
+  completed_measured_trials: number;
+  failed_trials: number;
+  excluded_trials: number;
+  cancelled_trials: number;
+  timeout_trials: number;
+  hardware_dependent: boolean;
+  capability_evidence: CapabilityEvidence[];
+  recommendations: CapabilityRecommendation[];
+  position_bias: {
+    sample_size: number;
+    left_preference_rate: number | null;
+    detected: boolean;
+    warning: string | null;
+  };
+  judge_disagreement: {
+    paired_sample_size: number;
+    disagreements: number;
+    disagreement_rate: number | null;
+    sufficient_sample: boolean;
+    warning: string | null;
+  };
+  judge_provenance: string[];
+  elo_eligible: boolean;
+  elo_updated: boolean;
+}
+
+export interface RunComparability {
+  comparable: boolean;
+  reasons: string[];
 }
 
 export interface BenchmarkLeaderboardEntry {
@@ -240,7 +325,9 @@ export interface UserStats {
 }
 
 export interface BlindPair {
+  comparison_id: number;
   prompt_id: number;
+  repetition_index: number;
   prompt_title: string;
   prompt_category: string;
   left_result_id: number;

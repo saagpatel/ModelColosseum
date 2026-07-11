@@ -39,7 +39,7 @@ export function BlindCompare({ runId, onClose }: Props) {
     try {
       await invoke("submit_blind_pick", {
         runId,
-        promptId: pair.prompt_id,
+        comparisonId: pair.comparison_id,
         winner,
       });
 
@@ -95,7 +95,7 @@ export function BlindCompare({ runId, onClose }: Props) {
                 Blind Comparison — Prompt {pairIndex + 1} of {total}
               </h2>
               <p className="mt-0.5 text-xs text-slate-500">
-                {currentPair.prompt_title}
+                {currentPair.prompt_title} · measured trial {currentPair.repetition_index + 1}
                 <span className="ml-2 rounded bg-slate-800 px-1.5 py-0.5 text-slate-500">
                   {currentPair.prompt_category}
                 </span>

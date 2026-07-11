@@ -2,6 +2,7 @@ mod benchmark;
 mod db;
 mod debate;
 mod elo;
+mod evaluation;
 mod ollama;
 mod prompts;
 
@@ -17,6 +18,8 @@ pub struct Model {
     pub parameter_count: Option<i64>,
     pub quantization: Option<String>,
     pub family: Option<String>,
+    pub digest: Option<String>,
+    pub size_bytes: Option<i64>,
     pub elo_rating: f64,
     pub arena_wins: i64,
     pub arena_losses: i64,
@@ -114,7 +117,7 @@ async fn list_models() -> Result<Vec<Model>, String> {
         .prepare(
             "SELECT id, name, display_name, parameter_count, quantization, family,
                     elo_rating, arena_wins, arena_losses, arena_draws, total_debates,
-                    last_used_at
+                    last_used_at, digest, size_bytes
              FROM models ORDER BY elo_rating DESC",
         )
         .map_err(|e| format!("query error: {e}"))?;
@@ -134,6 +137,8 @@ async fn list_models() -> Result<Vec<Model>, String> {
                 arena_draws: row.get(9)?,
                 total_debates: row.get(10)?,
                 last_used_at: row.get(11)?,
+                digest: row.get(12)?,
+                size_bytes: row.get(13)?,
             })
         })
         .map_err(|e| format!("query error: {e}"))?
@@ -307,17 +312,35 @@ async fn refresh_models() -> Result<Vec<Model>, String> {
         };
 
         let display = make_display_name(&m.name);
+        let capabilities_json = serde_json::to_string(&m.capabilities)
+            .map_err(|e| format!("capabilities serialize error: {e}"))?;
 
         let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
         conn.execute(
-            "INSERT INTO models (name, display_name, parameter_count, quantization, family)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO models
+                (name, display_name, parameter_count, quantization, family,
+                 digest, size_bytes, modified_at, capabilities_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(name) DO UPDATE SET
                 display_name = ?2,
                 parameter_count = COALESCE(?3, models.parameter_count),
                 quantization = COALESCE(?4, models.quantization),
-                family = COALESCE(?5, models.family)",
-            rusqlite::params![m.name, display, param_count, quant, family],
+                family = COALESCE(?5, models.family),
+                digest = COALESCE(?6, models.digest),
+                size_bytes = COALESCE(?7, models.size_bytes),
+                modified_at = COALESCE(?8, models.modified_at),
+                capabilities_json = ?9",
+            rusqlite::params![
+                m.name,
+                display,
+                param_count,
+                quant,
+                family,
+                m.digest,
+                m.size.map(|value| value as i64),
+                m.modified_at,
+                capabilities_json,
+            ],
         )
         .map_err(|e| format!("upsert error: {e}"))?;
     }
@@ -673,12 +696,16 @@ pub fn run() {
             benchmark::list_benchmark_runs,
             benchmark::auto_judge_benchmark,
             benchmark::cancel_auto_judge,
+            benchmark::get_run_evidence,
+            benchmark::get_run_comparability,
             benchmark::get_benchmark_leaderboard,
             benchmark::get_run_comparison,
             benchmark::start_blind_comparison,
             benchmark::submit_blind_pick,
             benchmark::finish_blind_comparison,
             benchmark::get_benchmark_metrics,
+            benchmark::export_evaluation_bundle,
+            benchmark::save_evaluation_bundle,
             benchmark::export_test_suite,
             benchmark::import_test_suite,
             benchmark::export_leaderboard,

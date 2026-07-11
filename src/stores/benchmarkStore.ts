@@ -111,7 +111,14 @@ export const useBenchmarkStore = create<BenchmarkState>((set, get) => ({
 
   setError: (message) => set({ phase: "error", errorMessage: message }),
 
-  reset: () => set({ ...initialState, hardwareMetrics: [] }),
+  reset: () =>
+    set((state) => ({
+      ...initialState,
+      suites: state.suites,
+      selectedSuiteId: state.selectedSuiteId,
+      prompts: state.prompts,
+      hardwareMetrics: [],
+    })),
 
   setResults: (results) => set({ results }),
 

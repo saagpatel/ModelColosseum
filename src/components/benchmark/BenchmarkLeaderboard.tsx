@@ -60,7 +60,7 @@ export function BenchmarkLeaderboard() {
       <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
         <div className="text-4xl text-slate-700">📊</div>
         <p className="text-sm font-medium text-slate-400">No benchmark results yet</p>
-        <p className="text-xs text-slate-600">Run and score a benchmark to populate this leaderboard</p>
+        <p className="text-xs text-slate-600">Comparable runs with local auto-judge scores appear here</p>
       </div>
     );
   }
@@ -81,9 +81,14 @@ export function BenchmarkLeaderboard() {
 
   return (
     <div className="space-y-8">
+      <div className="rounded-xl border border-amber-900/70 bg-amber-500/5 p-4 text-sm text-amber-200">
+        This is capability evidence from completed comparable runs scored by local auto-judges. It is not a universal model ranking;
+        open a run to inspect judge identity, sample size, uncertainty, and hardware provenance.
+      </div>
+
       {/* Radar chart */}
       <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
-        <h2 className="mb-4 text-sm font-semibold text-slate-300">Category Scores</h2>
+        <h2 className="mb-4 text-sm font-semibold text-slate-300">Local auto-judge scores by capability</h2>
         <ResponsiveContainer width="100%" height={320}>
           <RadarChart data={radarData}>
             <PolarGrid stroke="#334155" />
@@ -134,9 +139,6 @@ export function BenchmarkLeaderboard() {
                 Model
               </th>
               <th className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-slate-500">
-                Avg Score
-              </th>
-              <th className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-slate-500">
                 Avg TPS
               </th>
               <th className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-slate-500">
@@ -161,9 +163,6 @@ export function BenchmarkLeaderboard() {
                     />
                     <span className="font-medium text-slate-200">{entry.display_name}</span>
                   </div>
-                </td>
-                <td className="px-4 py-3 text-center font-mono text-sm text-gold-400">
-                  {entry.avg_score !== null ? entry.avg_score.toFixed(2) : "—"}
                 </td>
                 <td className="px-4 py-3 text-center font-mono text-xs text-slate-300">
                   {entry.avg_tps !== null ? `${entry.avg_tps.toFixed(1)} t/s` : "—"}

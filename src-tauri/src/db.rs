@@ -22,9 +22,7 @@ pub fn init_db() -> SqlResult<()> {
     conn.execute_batch("PRAGMA foreign_keys=ON;")?;
 
     conn.execute_batch(SCHEMA)?;
-    // Idempotent migration — swallows "duplicate column" error on subsequent launches
-    conn.execute_batch("ALTER TABLE benchmark_runs ADD COLUMN hardware_metrics TEXT;")
-        .ok();
+    apply_migrations(&conn)?;
     seed_defaults(&conn)?;
 
     DB.set(Mutex::new(conn))
@@ -36,6 +34,203 @@ pub fn init_db() -> SqlResult<()> {
 pub fn get_db() -> &'static Mutex<Connection> {
     DB.get()
         .expect("database not initialized — call init_db() first")
+}
+
+fn has_column(conn: &Connection, table: &str, column: &str) -> SqlResult<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(names.iter().any(|name| name == column))
+}
+
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> SqlResult<()> {
+    if !has_column(conn, table, column)? {
+        conn.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {definition};"
+        ))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn apply_migrations(conn: &Connection) -> SqlResult<()> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| -> SqlResult<()> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT OR IGNORE INTO schema_migrations (version) VALUES (1);",
+        )?;
+
+        add_column_if_missing(conn, "models", "digest", "TEXT")?;
+        add_column_if_missing(conn, "models", "size_bytes", "INTEGER")?;
+        add_column_if_missing(conn, "models", "modified_at", "TEXT")?;
+        add_column_if_missing(conn, "models", "capabilities_json", "TEXT")?;
+
+        add_column_if_missing(conn, "benchmark_runs", "hardware_metrics", "TEXT")?;
+        add_column_if_missing(conn, "benchmark_runs", "run_key", "TEXT")?;
+        add_column_if_missing(conn, "benchmark_runs", "manifest_digest", "TEXT")?;
+        add_column_if_missing(
+            conn,
+            "benchmark_runs",
+            "repetitions",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        add_column_if_missing(
+            conn,
+            "benchmark_runs",
+            "warmup_repetitions",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        add_column_if_missing(conn, "benchmark_runs", "random_seed", "INTEGER")?;
+        add_column_if_missing(
+            conn,
+            "benchmark_runs",
+            "timeout_seconds",
+            "INTEGER NOT NULL DEFAULT 120",
+        )?;
+        add_column_if_missing(conn, "benchmark_runs", "generation_settings_json", "TEXT")?;
+        add_column_if_missing(
+            conn,
+            "benchmark_runs",
+            "outcome_status",
+            "TEXT NOT NULL DEFAULT 'legacy'",
+        )?;
+        add_column_if_missing(conn, "benchmark_runs", "failure_reason", "TEXT")?;
+        add_column_if_missing(
+            conn,
+            "benchmark_runs",
+            "comparable",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        add_column_if_missing(conn, "benchmark_runs", "comparability_notes", "TEXT")?;
+
+        add_column_if_missing(conn, "benchmark_results", "trial_id", "INTEGER")?;
+        add_column_if_missing(
+            conn,
+            "benchmark_results",
+            "repetition_index",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        add_column_if_missing(
+            conn,
+            "benchmark_results",
+            "trial_kind",
+            "TEXT NOT NULL DEFAULT 'legacy'",
+        )?;
+        add_column_if_missing(conn, "benchmark_results", "generation_seed", "INTEGER")?;
+
+        add_column_if_missing(conn, "benchmark_scores", "judge_manifest_json", "TEXT")?;
+        add_column_if_missing(conn, "benchmark_scores", "raw_judge_output", "TEXT")?;
+        add_column_if_missing(
+            conn,
+            "benchmark_scores",
+            "status",
+            "TEXT NOT NULL DEFAULT 'completed'",
+        )?;
+
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS evaluation_run_manifests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL UNIQUE REFERENCES benchmark_runs(id),
+                schema_version INTEGER NOT NULL,
+                manifest_json TEXT NOT NULL,
+                manifest_digest TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TRIGGER IF NOT EXISTS evaluation_manifest_no_update
+            BEFORE UPDATE ON evaluation_run_manifests
+            BEGIN
+                SELECT RAISE(ABORT, 'evaluation manifests are immutable');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS evaluation_manifest_no_delete
+            BEFORE DELETE ON evaluation_run_manifests
+            BEGIN
+                SELECT RAISE(ABORT, 'evaluation manifests are immutable');
+            END;
+
+            CREATE TABLE IF NOT EXISTS benchmark_trials (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL REFERENCES benchmark_runs(id) ON DELETE CASCADE,
+                trial_key TEXT NOT NULL UNIQUE,
+                prompt_id INTEGER NOT NULL REFERENCES prompts(id),
+                model_id INTEGER NOT NULL REFERENCES models(id),
+                repetition_index INTEGER NOT NULL,
+                trial_kind TEXT NOT NULL CHECK(trial_kind IN ('warmup', 'measured')),
+                execution_order INTEGER NOT NULL,
+                generation_seed INTEGER NOT NULL,
+                comparison_position TEXT CHECK(comparison_position IN ('left', 'right')),
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'running', 'completed', 'cancelled', 'timeout', 'failed', 'excluded')),
+                result_id INTEGER REFERENCES benchmark_results(id),
+                error_message TEXT,
+                exclusion_reason TEXT,
+                started_at TEXT,
+                completed_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_trials_run_order
+                ON benchmark_trials(run_id, execution_order);
+            CREATE INDEX IF NOT EXISTS idx_trials_run_status
+                ON benchmark_trials(run_id, status, trial_kind);
+
+            CREATE TABLE IF NOT EXISTS benchmark_comparisons (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL REFERENCES benchmark_runs(id) ON DELETE CASCADE,
+                prompt_id INTEGER NOT NULL REFERENCES prompts(id),
+                repetition_index INTEGER NOT NULL,
+                model_a_id INTEGER NOT NULL REFERENCES models(id),
+                model_b_id INTEGER NOT NULL REFERENCES models(id),
+                result_a_id INTEGER NOT NULL REFERENCES benchmark_results(id),
+                result_b_id INTEGER NOT NULL REFERENCES benchmark_results(id),
+                model_a_position TEXT NOT NULL CHECK(model_a_position IN ('left', 'right')),
+                human_outcome TEXT CHECK(human_outcome IN ('left', 'right', 'tie', 'skipped')),
+                human_winner_model_id INTEGER REFERENCES models(id),
+                human_judged_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(run_id, prompt_id, repetition_index)
+            );
+            CREATE INDEX IF NOT EXISTS idx_comparisons_run
+                ON benchmark_comparisons(run_id, prompt_id, repetition_index);
+
+            CREATE TABLE IF NOT EXISTS benchmark_judge_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL REFERENCES benchmark_runs(id) ON DELETE CASCADE,
+                result_id INTEGER NOT NULL REFERENCES benchmark_results(id) ON DELETE CASCADE,
+                judge_model_id INTEGER NOT NULL REFERENCES models(id),
+                judge_manifest_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'running'
+                    CHECK(status IN ('running', 'completed', 'cancelled', 'timeout', 'failed', 'invalid')),
+                raw_output TEXT,
+                error_message TEXT,
+                started_at TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_judge_attempts_run
+                ON benchmark_judge_attempts(run_id, status, result_id);
+
+            INSERT OR IGNORE INTO schema_migrations (version) VALUES (2);
+            INSERT OR IGNORE INTO schema_migrations (version) VALUES (3);",
+        )?;
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT"),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
 }
 
 fn seed_defaults(conn: &Connection) -> SqlResult<()> {
@@ -523,3 +718,78 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL
 );
 ";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn migrated_connection() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        apply_migrations(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn reproducibility_migration_is_idempotent_and_preserves_legacy_runs() {
+        let conn = migrated_connection();
+        conn.execute("INSERT INTO test_suites (name) VALUES ('Legacy')", [])
+            .unwrap();
+        let suite_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO benchmark_runs (suite_id, status) VALUES (?1, 'completed')",
+            [suite_id],
+        )
+        .unwrap();
+        let run_id = conn.last_insert_rowid();
+
+        apply_migrations(&conn).unwrap();
+
+        let (status, outcome): (String, String) = conn
+            .query_row(
+                "SELECT status, outcome_status FROM benchmark_runs WHERE id = ?1",
+                [run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "completed");
+        assert_eq!(outcome, "legacy");
+        assert!(has_column(&conn, "models", "digest").unwrap());
+        assert!(has_column(&conn, "benchmark_runs", "manifest_digest").unwrap());
+    }
+
+    #[test]
+    fn run_manifests_are_immutable() {
+        let conn = migrated_connection();
+        conn.execute("INSERT INTO test_suites (name) VALUES ('Suite')", [])
+            .unwrap();
+        let suite_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO benchmark_runs (suite_id, status) VALUES (?1, 'running')",
+            [suite_id],
+        )
+        .unwrap();
+        let run_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO evaluation_run_manifests
+                (run_id, schema_version, manifest_json, manifest_digest)
+             VALUES (?1, 1, '{}', 'digest')",
+            [run_id],
+        )
+        .unwrap();
+
+        assert!(conn
+            .execute(
+                "UPDATE evaluation_run_manifests SET manifest_json = 'changed' WHERE run_id = ?1",
+                [run_id],
+            )
+            .is_err());
+        assert!(conn
+            .execute(
+                "DELETE FROM evaluation_run_manifests WHERE run_id = ?1",
+                [run_id],
+            )
+            .is_err());
+    }
+}

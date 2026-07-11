@@ -434,6 +434,8 @@ async fn run_debate_loop(
             system: Some(system_a),
             num_predict: Some(num_predict),
             temperature: Some(0.7),
+            think: None,
+            seed: None,
         };
         let req_b = GenerateRequest {
             model: model_b_name.clone(),
@@ -441,6 +443,8 @@ async fn run_debate_loop(
             system: Some(system_b),
             num_predict: Some(num_predict),
             temperature: Some(0.7),
+            think: None,
+            seed: None,
         };
 
         let phase = match format.as_str() {
@@ -1079,6 +1083,8 @@ pub async fn submit_human_argument(
             system: Some(system_prompt),
             num_predict: Some(ai_word_limit * 2),
             temperature: Some(0.7),
+            think: None,
+            seed: None,
         };
 
         // Start stream
@@ -1524,6 +1530,8 @@ pub async fn request_scorecard(
         system: Some("You are a strict but impartial debate judge. Output only valid JSON.".into()),
         num_predict: Some(512),
         temperature: Some(0.1),
+        think: None,
+        seed: None,
     };
 
     // 6. Stream and collect silently (no UI events)
@@ -1770,6 +1778,8 @@ pub async fn suggest_topics(model_name: String) -> Result<Vec<String>, String> {
         system: None,
         num_predict: Some(500),
         temperature: Some(0.9),
+        think: None,
+        seed: None,
     };
 
     let mut rx = ollama::generate_stream(req).await?;

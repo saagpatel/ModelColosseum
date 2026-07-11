@@ -12,7 +12,7 @@ fn client() -> &'static Client {
 }
 
 /// Read the configured Ollama URL from settings, falling back to the default.
-fn get_base_url() -> String {
+pub fn get_base_url() -> String {
     if let Ok(conn) = crate::db::get_db().lock() {
         if let Ok(url) = conn.query_row(
             "SELECT value FROM settings WHERE key = 'ollama_url'",
@@ -27,11 +27,38 @@ fn get_base_url() -> String {
     DEFAULT_OLLAMA_URL.to_string()
 }
 
+fn require_local_base_url(base: &str) -> Result<(), String> {
+    let url = reqwest::Url::parse(base).map_err(|e| format!("invalid Ollama URL: {e}"))?;
+    let is_local = url
+        .host_str()
+        .map(|host| {
+            let normalized = host.trim_matches(['[', ']']);
+            normalized.eq_ignore_ascii_case("localhost")
+                || normalized
+                    .parse::<std::net::IpAddr>()
+                    .map(|address| address.is_loopback())
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false);
+    if !is_local {
+        return Err(
+            "ModelColosseum evaluation calls are restricted to local Ollama endpoints".into(),
+        );
+    }
+    Ok(())
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OllamaModel {
     pub name: String,
     pub size: Option<u64>,
+    #[serde(default)]
+    pub digest: Option<String>,
+    #[serde(default)]
+    pub modified_at: Option<String>,
     pub details: Option<OllamaModelDetails>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -44,6 +71,11 @@ pub struct OllamaModelDetails {
 #[derive(Debug, Deserialize)]
 struct TagsResponse {
     models: Vec<OllamaModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VersionResponse {
+    version: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -74,6 +106,7 @@ pub struct StreamChunk {
 
 pub async fn health_check() -> Result<bool, String> {
     let base = get_base_url();
+    require_local_base_url(&base)?;
     match client()
         .get(&base)
         .timeout(std::time::Duration::from_secs(3))
@@ -87,6 +120,7 @@ pub async fn health_check() -> Result<bool, String> {
 
 pub async fn list_models() -> Result<Vec<OllamaModel>, String> {
     let base = get_base_url();
+    require_local_base_url(&base)?;
     let resp = client()
         .get(format!("{base}/api/tags"))
         .timeout(std::time::Duration::from_secs(10))
@@ -104,6 +138,7 @@ pub async fn list_models() -> Result<Vec<OllamaModel>, String> {
 
 pub async fn show_model(name: &str) -> Result<ShowResponse, String> {
     let base = get_base_url();
+    require_local_base_url(&base)?;
     let resp = client()
         .post(format!("{base}/api/show"))
         .json(&serde_json::json!({ "name": name }))
@@ -123,6 +158,30 @@ pub struct GenerateRequest {
     pub system: Option<String>,
     pub num_predict: Option<u32>,
     pub temperature: Option<f64>,
+    pub think: Option<bool>,
+    pub seed: Option<u64>,
+}
+
+pub async fn get_version() -> Result<String, String> {
+    let base = get_base_url();
+    require_local_base_url(&base)?;
+    let response = client()
+        .get(format!("{base}/api/version"))
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await
+        .map_err(|e| format!("failed to reach Ollama version endpoint: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Ollama version endpoint returned {}",
+            response.status()
+        ));
+    }
+    response
+        .json::<VersionResponse>()
+        .await
+        .map(|payload| payload.version)
+        .map_err(|e| format!("failed to parse Ollama version: {e}"))
 }
 
 /// Streams tokens from Ollama's /api/generate endpoint.
@@ -141,6 +200,9 @@ pub async fn generate_stream(
     if let Some(system) = &req.system {
         body["system"] = serde_json::Value::String(system.clone());
     }
+    if let Some(think) = req.think {
+        body["think"] = serde_json::Value::Bool(think);
+    }
 
     let mut options = serde_json::Map::new();
     if let Some(num_predict) = req.num_predict {
@@ -154,11 +216,15 @@ pub async fn generate_stream(
             options.insert("temperature".into(), serde_json::Value::Number(n));
         }
     }
+    if let Some(seed) = req.seed {
+        options.insert("seed".into(), serde_json::Value::Number(seed.into()));
+    }
     if !options.is_empty() {
         body["options"] = serde_json::Value::Object(options);
     }
 
     let base = get_base_url();
+    require_local_base_url(&base)?;
     let resp = client()
         .post(format!("{base}/api/generate"))
         .json(&body)
@@ -208,4 +274,18 @@ pub async fn generate_stream(
     });
 
     Ok(rx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn evaluation_endpoints_must_be_local() {
+        assert!(require_local_base_url("http://localhost:11434").is_ok());
+        assert!(require_local_base_url("http://127.0.0.1:11434").is_ok());
+        assert!(require_local_base_url("http://[::1]:11434").is_ok());
+        assert!(require_local_base_url("https://example.com").is_err());
+        assert!(require_local_base_url("http://192.168.1.10:11434").is_err());
+    }
 }

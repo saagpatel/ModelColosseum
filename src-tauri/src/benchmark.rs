@@ -1,4 +1,9 @@
 use crate::db;
+use crate::evaluation::{
+    self, build_trial_plan, digest_json, ConfidenceSummary, DisagreementSummary, EloEligibility,
+    EvaluationConfig, HardwareSnapshot, ModelSnapshot, OllamaSnapshot, PositionBiasSummary,
+    PromptSnapshot, RunManifest, SideOutcome, SuiteSnapshot, TrialKind,
+};
 use crate::ollama::{self, GenerateRequest, StreamChunk};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -19,7 +24,7 @@ pub struct ActiveBlindComparisons(pub Arc<Mutex<HashMap<i64, BlindComparisonStat
 pub struct BlindComparisonState {
     pub model_a_id: i64,
     pub model_b_id: i64,
-    /// prompt_id → (result_id_a, result_id_b, a_is_left)
+    /// comparison_id → (result_id_a, result_id_b, a_is_left)
     pub prompt_assignments: HashMap<i64, (i64, i64, bool)>,
 }
 
@@ -104,6 +109,10 @@ pub struct BenchmarkResult {
     pub manual_score: Option<i64>,
     pub auto_judge_score: Option<i64>,
     pub auto_judge_notes: Option<String>,
+    pub repetition_index: i64,
+    pub trial_key: Option<String>,
+    pub generation_seed: Option<i64>,
+    pub trial_status: String,
     pub created_at: String,
 }
 
@@ -119,6 +128,59 @@ pub struct BenchmarkRunSummary {
     pub total_results: i64,
     pub started_at: String,
     pub completed_at: Option<String>,
+    pub outcome_status: String,
+    pub repetitions: i64,
+    pub failed_count: i64,
+    pub excluded_count: i64,
+    pub comparable: bool,
+    pub comparability_notes: Option<String>,
+    pub manifest_digest: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct CapabilityEvidence {
+    pub category: String,
+    pub model_id: i64,
+    pub model_name: String,
+    pub scoring_method: String,
+    pub confidence: ConfidenceSummary,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct CapabilityRecommendation {
+    pub category: String,
+    pub recommended_model: Option<String>,
+    pub confidence: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct RunEvidence {
+    pub run_id: i64,
+    pub outcome_status: String,
+    pub manifest_digest: Option<String>,
+    pub comparable: bool,
+    pub comparability_notes: Option<String>,
+    pub planned_measured_trials: i64,
+    pub completed_measured_trials: i64,
+    pub failed_trials: i64,
+    pub excluded_trials: i64,
+    pub cancelled_trials: i64,
+    pub timeout_trials: i64,
+    pub hardware_dependent: bool,
+    pub capability_evidence: Vec<CapabilityEvidence>,
+    pub recommendations: Vec<CapabilityRecommendation>,
+    pub position_bias: PositionBiasSummary,
+    pub judge_disagreement: DisagreementSummary,
+    pub judge_provenance: Vec<String>,
+    pub elo_eligible: bool,
+    pub elo_updated: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct RunComparability {
+    pub comparable: bool,
+    pub reasons: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -174,7 +236,9 @@ pub struct BenchmarkMetricsPayload {
 
 #[derive(Debug, Serialize, Clone)]
 pub struct BlindPair {
+    pub comparison_id: i64,
     pub prompt_id: i64,
+    pub repetition_index: i64,
     pub prompt_title: String,
     pub prompt_category: String,
     pub left_result_id: i64,
@@ -236,6 +300,63 @@ struct PromptExportData {
     sort_order: i64,
 }
 
+#[derive(Debug, Serialize)]
+struct TrialExportData {
+    trial_key: String,
+    prompt_id: i64,
+    model_id: i64,
+    repetition_index: i64,
+    trial_kind: String,
+    execution_order: i64,
+    generation_seed: i64,
+    comparison_position: Option<String>,
+    status: String,
+    result_id: Option<i64>,
+    error_message: Option<String>,
+    exclusion_reason: Option<String>,
+    started_at: Option<String>,
+    completed_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct JudgeAttemptExportData {
+    result_id: i64,
+    judge_model_id: i64,
+    judge_manifest_json: String,
+    status: String,
+    raw_output: Option<String>,
+    error_message: Option<String>,
+    started_at: String,
+    completed_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ComparisonExportData {
+    comparison_id: i64,
+    prompt_id: i64,
+    repetition_index: i64,
+    model_a_id: i64,
+    model_b_id: i64,
+    result_a_id: i64,
+    result_b_id: i64,
+    model_a_position: String,
+    human_outcome: Option<String>,
+    human_winner_model_id: Option<i64>,
+    human_judged_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct EvaluationBundleExport {
+    version: u32,
+    exported_at_unix_ms: u64,
+    manifest: serde_json::Value,
+    evidence: RunEvidence,
+    trials: Vec<TrialExportData>,
+    results: Vec<BenchmarkResult>,
+    judge_attempts: Vec<JudgeAttemptExportData>,
+    comparisons: Vec<ComparisonExportData>,
+}
+
 // ---------------------------------------------------------------------------
 // Benchmark metrics
 // ---------------------------------------------------------------------------
@@ -259,6 +380,8 @@ async fn benchmark_stream_and_collect(
     start: Instant,
 ) -> Result<(String, BenchmarkMetrics), String> {
     let mut buffer = String::new();
+    let mut pending_emit = String::new();
+    let mut last_emit = Instant::now();
     let mut first_token_time: Option<i64> = None;
     let mut eval_count: Option<u64> = None;
     let mut eval_duration: Option<u64> = None;
@@ -277,10 +400,16 @@ async fn benchmark_stream_and_collect(
                                     first_token_time = Some(start.elapsed().as_millis() as i64);
                                 }
                                 buffer.push_str(text);
-                                let _ = app.emit("benchmark:stream", BenchmarkStreamPayload {
-                                    run_id,
-                                    token: text.clone(),
-                                });
+                                pending_emit.push_str(text);
+                                if pending_emit.len() >= 64
+                                    || last_emit.elapsed() >= std::time::Duration::from_millis(50)
+                                {
+                                    let _ = app.emit("benchmark:stream", BenchmarkStreamPayload {
+                                        run_id,
+                                        token: std::mem::take(&mut pending_emit),
+                                    });
+                                    last_emit = Instant::now();
+                                }
                             }
                         }
                         if c.done {
@@ -297,6 +426,15 @@ async fn benchmark_stream_and_collect(
     }
 
     let total_time_ms = start.elapsed().as_millis() as i64;
+    if !pending_emit.is_empty() {
+        let _ = app.emit(
+            "benchmark:stream",
+            BenchmarkStreamPayload {
+                run_id,
+                token: pending_emit,
+            },
+        );
+    }
     let tps = match (eval_count, eval_duration) {
         (Some(count), Some(dur)) if dur > 0 => Some(count as f64 / (dur as f64 / 1_000_000_000.0)),
         _ => None,
@@ -320,7 +458,11 @@ async fn benchmark_stream_and_collect(
 fn update_run_status(run_id: i64, status: &str) -> Result<(), String> {
     let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
     conn.execute(
-        "UPDATE benchmark_runs SET status = ?1, completed_at = datetime('now') WHERE id = ?2",
+        "UPDATE benchmark_runs
+         SET status = ?1, outcome_status = ?1, comparable = 0,
+             comparability_notes = 'Run did not complete all measured trials',
+             completed_at = datetime('now')
+         WHERE id = ?2",
         rusqlite::params![status, run_id],
     )
     .map_err(|e| format!("update run status error: {e}"))?;
@@ -611,30 +753,193 @@ pub async fn reorder_prompts(items: Vec<ReorderItem>) -> Result<(), String> {
 // Runner commands
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone)]
+struct RunPrompt {
+    id: i64,
+    title: String,
+    category: String,
+    text: String,
+    system_prompt: Option<String>,
+    ideal_answer: Option<String>,
+    eval_criteria: Option<String>,
+    sort_order: i64,
+}
+
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn capture_hardware_snapshot() -> HardwareSnapshot {
+    let mut system = System::new_all();
+    system.refresh_all();
+    HardwareSnapshot {
+        os_name: System::name(),
+        os_version: System::os_version(),
+        kernel_version: System::kernel_version(),
+        architecture: std::env::consts::ARCH.to_string(),
+        cpu_brand: system.cpus().first().map(|cpu| cpu.brand().to_string()),
+        logical_cpu_count: system.cpus().len(),
+        total_memory_bytes: system.total_memory(),
+    }
+}
+
+fn require_ollama_available(available: bool) -> Result<(), String> {
+    if available {
+        Ok(())
+    } else {
+        Err("Ollama is unavailable. No evaluation run was created.".into())
+    }
+}
+
+fn trial_key(run_key: &str, item: &evaluation::TrialPlanItem) -> String {
+    format!(
+        "{run_key}:{}:{}:{}:{}",
+        item.kind.as_str(),
+        item.prompt_id,
+        item.model_id,
+        item.repetition_index
+    )
+}
+
+fn mark_trial_terminal(
+    trial_id: i64,
+    status: &str,
+    error_message: Option<&str>,
+    exclusion_reason: Option<&str>,
+) {
+    if let Ok(conn) = db::get_db().lock() {
+        let _ = conn.execute(
+            "UPDATE benchmark_trials
+             SET status = ?1, error_message = ?2, exclusion_reason = ?3,
+                 completed_at = datetime('now')
+             WHERE id = ?4",
+            rusqlite::params![status, error_message, exclusion_reason, trial_id],
+        );
+    }
+}
+
+fn create_completed_comparisons(run_id: i64, model_ids: &[i64]) -> Result<(), String> {
+    if model_ids.len() != 2 {
+        return Ok(());
+    }
+    let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT a.prompt_id, a.repetition_index, a.result_id, b.result_id,
+                    a.comparison_position
+             FROM benchmark_trials a
+             JOIN benchmark_trials b
+               ON b.run_id = a.run_id
+              AND b.prompt_id = a.prompt_id
+              AND b.repetition_index = a.repetition_index
+              AND b.trial_kind = a.trial_kind
+             WHERE a.run_id = ?1
+               AND a.model_id = ?2
+               AND b.model_id = ?3
+               AND a.trial_kind = 'measured'
+               AND a.status = 'completed'
+               AND b.status = 'completed'
+               AND a.result_id IS NOT NULL
+               AND b.result_id IS NOT NULL
+             ORDER BY a.prompt_id, a.repetition_index",
+        )
+        .map_err(|e| format!("comparison preparation error: {e}"))?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![run_id, model_ids[0], model_ids[1]],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .map_err(|e| format!("comparison preparation error: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("comparison row error: {e}"))?;
+    drop(stmt);
+
+    for (prompt_id, repetition_index, result_a_id, result_b_id, position) in rows {
+        conn.execute(
+            "INSERT OR IGNORE INTO benchmark_comparisons
+                (run_id, prompt_id, repetition_index, model_a_id, model_b_id,
+                 result_a_id, result_b_id, model_a_position)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                run_id,
+                prompt_id,
+                repetition_index,
+                model_ids[0],
+                model_ids[1],
+                result_a_id,
+                result_b_id,
+                position,
+            ],
+        )
+        .map_err(|e| format!("comparison insert error: {e}"))?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn start_benchmark(
     app: tauri::AppHandle,
     state: tauri::State<'_, ActiveBenchmarks>,
     suite_id: i64,
     model_ids: Vec<i64>,
+    config: Option<EvaluationConfig>,
 ) -> Result<i64, String> {
-    // Load prompts for suite
-    let prompts = {
+    let config = config.unwrap_or_default();
+    config.validate()?;
+
+    let mut distinct_model_ids = model_ids.clone();
+    distinct_model_ids.sort_unstable();
+    distinct_model_ids.dedup();
+    if distinct_model_ids.len() != model_ids.len() {
+        return Err("Duplicate model selection is not allowed".into());
+    }
+    if model_ids.len() < 2 {
+        return Err("Select at least two models for a comparison".into());
+    }
+
+    let (suite_name, suite_description): (String, Option<String>) = {
+        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        conn.query_row(
+            "SELECT name, description FROM test_suites WHERE id = ?1",
+            [suite_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| format!("suite not found (id={suite_id}): {e}"))?
+    };
+
+    let prompts: Vec<RunPrompt> = {
         let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, title, text, system_prompt FROM prompts
+                "SELECT id, title, category, text, system_prompt, ideal_answer,
+                        eval_criteria, sort_order
+                 FROM prompts
                  WHERE suite_id = ?1 ORDER BY sort_order ASC",
             )
             .map_err(|e| format!("prompts query error: {e}"))?;
         let rows = stmt
             .query_map(rusqlite::params![suite_id], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                ))
+                Ok(RunPrompt {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    category: row.get(2)?,
+                    text: row.get(3)?,
+                    system_prompt: row.get(4)?,
+                    ideal_answer: row.get(5)?,
+                    eval_criteria: row.get(6)?,
+                    sort_order: row.get(7)?,
+                })
             })
             .map_err(|e| format!("prompts query error: {e}"))?
             .collect::<Result<Vec<_>, _>>()
@@ -646,7 +951,6 @@ pub async fn start_benchmark(
         return Err("Suite has no prompts".into());
     }
 
-    // Load model names
     let models: Vec<(i64, String)> = {
         let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
         model_ids
@@ -662,19 +966,177 @@ pub async fn start_benchmark(
             .collect::<Result<Vec<_>, _>>()?
     };
 
-    if models.is_empty() {
-        return Err("No models specified".into());
+    require_ollama_available(ollama::health_check().await?)?;
+    let ollama_version = ollama::get_version().await?;
+    let installed_models = ollama::list_models().await?;
+    let mut model_snapshots = Vec::new();
+    for (model_id, exact_tag) in &models {
+        let live = installed_models
+            .iter()
+            .find(|candidate| candidate.name == *exact_tag)
+            .ok_or_else(|| format!("Model '{exact_tag}' is not currently installed in Ollama"))?;
+        if !live.capabilities.is_empty()
+            && !live
+                .capabilities
+                .iter()
+                .any(|capability| capability == "completion")
+        {
+            return Err(format!(
+                "Model '{exact_tag}' does not support text completion"
+            ));
+        }
+        let details = live.details.as_ref();
+        model_snapshots.push(ModelSnapshot {
+            database_id: *model_id,
+            exact_tag: exact_tag.clone(),
+            digest: live.digest.clone(),
+            size_bytes: live.size,
+            parameter_size: details.and_then(|value| value.parameter_size.clone()),
+            quantization: details.and_then(|value| value.quantization_level.clone()),
+            family: details.and_then(|value| value.family.clone()),
+            modified_at: live.modified_at.clone(),
+            capabilities: live.capabilities.clone(),
+        });
     }
 
-    // Insert benchmark_run
-    let run_id = {
-        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
-        conn.execute(
-            "INSERT INTO benchmark_runs (suite_id, status) VALUES (?1, 'running')",
-            rusqlite::params![suite_id],
+    let prompt_snapshots: Vec<PromptSnapshot> = prompts
+        .iter()
+        .map(|prompt| {
+            let content = serde_json::json!({
+                "category": prompt.category,
+                "title": prompt.title,
+                "text": prompt.text,
+                "system_prompt": prompt.system_prompt,
+                "ideal_answer": prompt.ideal_answer,
+                "eval_criteria": prompt.eval_criteria,
+                "sort_order": prompt.sort_order,
+            });
+            Ok(PromptSnapshot {
+                id: prompt.id,
+                category: prompt.category.clone(),
+                title: prompt.title.clone(),
+                text: prompt.text.clone(),
+                system_prompt: prompt.system_prompt.clone(),
+                ideal_answer: prompt.ideal_answer.clone(),
+                eval_criteria: prompt.eval_criteria.clone(),
+                sort_order: prompt.sort_order,
+                digest: digest_json(&content)?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let suite_content = serde_json::json!({
+        "name": suite_name,
+        "description": suite_description,
+        "prompts": prompt_snapshots.iter().map(|prompt| &prompt.digest).collect::<Vec<_>>(),
+    });
+    let suite_snapshot = SuiteSnapshot {
+        id: suite_id,
+        name: suite_name,
+        description: suite_description,
+        digest: digest_json(&suite_content)?,
+        prompts: prompt_snapshots,
+    };
+
+    let created_at_unix_ms = unix_time_ms();
+    let random_seed = config
+        .seed
+        .unwrap_or(created_at_unix_ms ^ ((std::process::id() as u64) << 32))
+        & i64::MAX as u64;
+    let prompt_ids: Vec<i64> = prompts.iter().map(|prompt| prompt.id).collect();
+    let plan = build_trial_plan(&prompt_ids, &model_ids, &config, random_seed)?;
+    let measured_trial_count = plan
+        .iter()
+        .filter(|trial| trial.kind == TrialKind::Measured)
+        .count();
+    let warmup_trial_count = plan.len() - measured_trial_count;
+
+    let generation_settings_json =
+        serde_json::to_string(&config).map_err(|e| format!("settings serialize error: {e}"))?;
+    let ollama_endpoint = ollama::get_base_url();
+    let hardware_snapshot = capture_hardware_snapshot();
+    let (run_id, run_key, manifest_digest, prepared_trials) = {
+        let mut conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("begin run transaction: {e}"))?;
+        tx.execute(
+            "INSERT INTO benchmark_runs
+                (suite_id, status, repetitions, warmup_repetitions, random_seed,
+                 timeout_seconds, generation_settings_json, outcome_status)
+             VALUES (?1, 'running', ?2, ?3, ?4, ?5, ?6, 'running')",
+            rusqlite::params![
+                suite_id,
+                config.repetitions,
+                config.warmup_repetitions,
+                random_seed as i64,
+                config.timeout_seconds as i64,
+                generation_settings_json,
+            ],
         )
         .map_err(|e| format!("insert run error: {e}"))?;
-        conn.last_insert_rowid()
+        let run_id = tx.last_insert_rowid();
+        let run_key = format!("eval-{run_id}-{random_seed:016x}");
+        let manifest = RunManifest {
+            schema_version: evaluation::MANIFEST_SCHEMA_VERSION,
+            run_key: run_key.clone(),
+            created_at_unix_ms,
+            suite: suite_snapshot,
+            models: model_snapshots,
+            ollama: OllamaSnapshot {
+                server_version: ollama_version,
+                endpoint: ollama_endpoint,
+            },
+            hardware: hardware_snapshot,
+            generation: config.clone(),
+            measured_trial_count,
+            warmup_trial_count,
+        };
+        let manifest_json = serde_json::to_string_pretty(&manifest)
+            .map_err(|e| format!("manifest serialize error: {e}"))?;
+        let manifest_digest = evaluation::sha256_hex(manifest_json.as_bytes());
+        tx.execute(
+            "UPDATE benchmark_runs SET run_key = ?1, manifest_digest = ?2 WHERE id = ?3",
+            rusqlite::params![run_key, manifest_digest, run_id],
+        )
+        .map_err(|e| format!("run manifest link error: {e}"))?;
+        tx.execute(
+            "INSERT INTO evaluation_run_manifests
+                (run_id, schema_version, manifest_json, manifest_digest)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                run_id,
+                evaluation::MANIFEST_SCHEMA_VERSION,
+                manifest_json,
+                manifest_digest,
+            ],
+        )
+        .map_err(|e| format!("manifest insert error: {e}"))?;
+
+        let mut prepared = Vec::new();
+        for item in plan {
+            tx.execute(
+                "INSERT INTO benchmark_trials
+                    (run_id, trial_key, prompt_id, model_id, repetition_index,
+                     trial_kind, execution_order, generation_seed, comparison_position)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                rusqlite::params![
+                    run_id,
+                    trial_key(&run_key, &item),
+                    item.prompt_id,
+                    item.model_id,
+                    item.repetition_index,
+                    item.kind.as_str(),
+                    item.execution_order as i64,
+                    item.generation_seed as i64,
+                    item.comparison_position,
+                ],
+            )
+            .map_err(|e| format!("trial insert error: {e}"))?;
+            prepared.push((tx.last_insert_rowid(), item));
+        }
+        tx.commit()
+            .map_err(|e| format!("commit run transaction: {e}"))?;
+        (run_id, run_key, manifest_digest, prepared)
     };
 
     // Create cancellation token
@@ -684,22 +1146,23 @@ pub async fn start_benchmark(
         map.insert(run_id, cancel_token.clone());
     }
 
-    let total = (prompts.len() * models.len()) as i32;
+    let total = prepared_trials.len() as i32;
     let active_map = Arc::clone(&state.0);
 
     // Shared metrics samples buffer (filled by the metrics task, persisted after main task)
     let metrics_samples: Arc<Mutex<Vec<BenchmarkMetricsPayload>>> =
         Arc::new(Mutex::new(Vec::new()));
     let metrics_samples_metrics = Arc::clone(&metrics_samples);
-    let metrics_cancel = cancel_token.clone();
+    let metrics_stop = CancellationToken::new();
+    let metrics_stop_task = metrics_stop.clone();
     let metrics_app = app.clone();
 
     // Spawn hardware metrics sampling task — runs concurrently with benchmark
-    tokio::spawn(async move {
+    let metrics_handle = tokio::spawn(async move {
         let mut sys = System::new_all();
         loop {
             tokio::select! {
-                _ = metrics_cancel.cancelled() => break,
+                _ = metrics_stop_task.cancelled() => break,
                 _ = tokio::time::sleep(tokio::time::Duration::from_secs(2)) => {
                     sys.refresh_cpu_usage();
                     sys.refresh_memory();
@@ -743,114 +1206,188 @@ pub async fn start_benchmark(
     });
 
     tokio::spawn(async move {
-        let mut completed = 0i32;
+        let prompt_map: HashMap<i64, RunPrompt> = prompts
+            .into_iter()
+            .map(|prompt| (prompt.id, prompt))
+            .collect();
+        let model_map: HashMap<i64, String> = models.iter().cloned().collect();
+        let mut processed = 0i32;
+        let mut invalid_trials = 0usize;
+        let mut fatal_failure: Option<String> = None;
 
-        'outer: for (model_id, model_name) in &models {
-            for (prompt_id, prompt_title, prompt_text, prompt_system) in &prompts {
-                if cancel_token.is_cancelled() {
-                    break 'outer;
+        for (trial_id, item) in &prepared_trials {
+            if cancel_token.is_cancelled() {
+                break;
+            }
+            let Some(prompt) = prompt_map.get(&item.prompt_id) else {
+                mark_trial_terminal(*trial_id, "failed", Some("prompt snapshot missing"), None);
+                invalid_trials += 1;
+                continue;
+            };
+            let Some(model_name) = model_map.get(&item.model_id) else {
+                mark_trial_terminal(*trial_id, "failed", Some("model snapshot missing"), None);
+                invalid_trials += 1;
+                continue;
+            };
+            if let Ok(conn) = db::get_db().lock() {
+                let _ = conn.execute(
+                    "UPDATE benchmark_trials
+                     SET status = 'running', started_at = datetime('now') WHERE id = ?1",
+                    [trial_id],
+                );
+            }
+
+            let num_predict = if item.kind == TrialKind::Warmup {
+                config.num_predict.map(|value| value.min(64)).or(Some(64))
+            } else {
+                config.num_predict
+            };
+            let req = GenerateRequest {
+                model: model_name.clone(),
+                prompt: prompt.text.clone(),
+                system: prompt.system_prompt.clone(),
+                num_predict,
+                temperature: Some(config.temperature),
+                think: Some(config.think),
+                seed: Some(item.generation_seed),
+            };
+            let start = Instant::now();
+            let attempt = tokio::time::timeout(
+                std::time::Duration::from_secs(config.timeout_seconds),
+                async {
+                    let rx = ollama::generate_stream(req).await?;
+                    benchmark_stream_and_collect(&app, run_id, rx, &cancel_token, start).await
+                },
+            )
+            .await;
+
+            match attempt {
+                Err(_) => {
+                    mark_trial_terminal(
+                        *trial_id,
+                        "timeout",
+                        Some("trial exceeded configured timeout"),
+                        Some("timeout"),
+                    );
+                    invalid_trials += 1;
                 }
-
-                let req = GenerateRequest {
-                    model: model_name.clone(),
-                    prompt: prompt_text.clone(),
-                    system: prompt_system.clone(),
-                    num_predict: None,
-                    temperature: Some(0.7),
-                };
-
-                let rx = match ollama::generate_stream(req).await {
-                    Ok(rx) => rx,
-                    Err(e) => {
-                        let _ = update_run_status(run_id, "cancelled");
-                        cleanup_token(&active_map, run_id);
-                        let _ = app.emit(
-                            "benchmark:error",
-                            BenchmarkErrorPayload {
+                Ok(Err(error)) if error == "cancelled" => {
+                    mark_trial_terminal(
+                        *trial_id,
+                        "cancelled",
+                        Some("operator cancelled run"),
+                        Some("cancelled"),
+                    );
+                    break;
+                }
+                Ok(Err(error)) => {
+                    mark_trial_terminal(
+                        *trial_id,
+                        "failed",
+                        Some(&error),
+                        Some("generation failed"),
+                    );
+                    invalid_trials += 1;
+                }
+                Ok(Ok((output, metrics))) => {
+                    let excluded = output.trim().is_empty();
+                    let save_result = (|| -> Result<(), String> {
+                        let mut conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+                        let tx = conn
+                            .transaction()
+                            .map_err(|e| format!("result transaction: {e}"))?;
+                        tx.execute(
+                            "INSERT INTO benchmark_results
+                                (run_id, prompt_id, model_id, output, tokens_generated,
+                                 time_to_first_token_ms, total_time_ms, tokens_per_second,
+                                 trial_id, repetition_index, trial_kind, generation_seed)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                            rusqlite::params![
                                 run_id,
-                                message: format!(
-                                    "Stream error for model '{}', prompt '{}': {e}",
-                                    model_name, prompt_title
-                                ),
-                            },
+                                item.prompt_id,
+                                item.model_id,
+                                output,
+                                metrics.tokens_generated,
+                                metrics.time_to_first_token_ms,
+                                metrics.total_time_ms,
+                                metrics.tokens_per_second,
+                                trial_id,
+                                item.repetition_index,
+                                item.kind.as_str(),
+                                item.generation_seed as i64,
+                            ],
+                        )
+                        .map_err(|e| format!("insert result error: {e}"))?;
+                        let result_id = tx.last_insert_rowid();
+                        tx.execute(
+                            "UPDATE benchmark_trials
+                             SET status = ?1, result_id = ?2, exclusion_reason = ?3,
+                                 completed_at = datetime('now')
+                             WHERE id = ?4",
+                            rusqlite::params![
+                                if excluded { "excluded" } else { "completed" },
+                                result_id,
+                                if excluded { Some("empty output") } else { None },
+                                trial_id,
+                            ],
+                        )
+                        .map_err(|e| format!("update trial result error: {e}"))?;
+                        tx.commit().map_err(|e| format!("commit result: {e}"))?;
+                        Ok(())
+                    })();
+                    if let Err(error) = save_result {
+                        mark_trial_terminal(
+                            *trial_id,
+                            "failed",
+                            Some(&error),
+                            Some("persistence failed"),
                         );
-                        return;
+                        fatal_failure = Some(error);
+                        break;
                     }
-                };
-
-                let start = Instant::now();
-                let result =
-                    benchmark_stream_and_collect(&app, run_id, rx, &cancel_token, start).await;
-
-                match result {
-                    Ok((output, metrics)) => {
-                        // Save result
-                        if let Err(e) = (|| -> Result<(), String> {
-                            let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
-                            conn.execute(
-                                "INSERT INTO benchmark_results
-                                    (run_id, prompt_id, model_id, output,
-                                     tokens_generated, time_to_first_token_ms, total_time_ms, tokens_per_second)
-                                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                                rusqlite::params![
-                                    run_id,
-                                    prompt_id,
-                                    model_id,
-                                    output,
-                                    metrics.tokens_generated,
-                                    metrics.time_to_first_token_ms,
-                                    metrics.total_time_ms,
-                                    metrics.tokens_per_second,
-                                ],
-                            )
-                            .map_err(|e| format!("insert result error: {e}"))?;
-                            Ok(())
-                        })() {
-                            let _ = update_run_status(run_id, "cancelled");
-                            cleanup_token(&active_map, run_id);
-                            let _ = app.emit(
-                                "benchmark:error",
-                                BenchmarkErrorPayload { run_id, message: e },
-                            );
-                            return;
-                        }
-
-                        completed += 1;
-                        let _ = app.emit(
-                            "benchmark:progress",
-                            BenchmarkProgressPayload {
-                                run_id,
-                                completed,
-                                total,
-                                current_model: model_name.clone(),
-                                current_prompt: prompt_title.clone(),
-                            },
-                        );
-                    }
-                    Err(e) if e == "cancelled" => {
-                        break 'outer;
-                    }
-                    Err(e) => {
-                        let _ = update_run_status(run_id, "cancelled");
-                        cleanup_token(&active_map, run_id);
-                        let _ = app.emit(
-                            "benchmark:error",
-                            BenchmarkErrorPayload {
-                                run_id,
-                                message: format!(
-                                    "Generation error for model '{}', prompt '{}': {e}",
-                                    model_name, prompt_title
-                                ),
-                            },
-                        );
-                        return;
+                    if excluded {
+                        invalid_trials += 1;
                     }
                 }
             }
+
+            processed += 1;
+            let _ = app.emit(
+                "benchmark:progress",
+                BenchmarkProgressPayload {
+                    run_id,
+                    completed: processed,
+                    total,
+                    current_model: model_name.clone(),
+                    current_prompt: if item.kind == TrialKind::Warmup {
+                        format!("Warm-up · {}", prompt.title)
+                    } else {
+                        format!("{} · trial {}", prompt.title, item.repetition_index + 1)
+                    },
+                },
+            );
         }
 
-        if cancel_token.is_cancelled() {
-            let _ = update_run_status(run_id, "cancelled");
+        let was_cancelled = cancel_token.is_cancelled();
+        if was_cancelled {
+            if let Ok(conn) = db::get_db().lock() {
+                let _ = conn.execute(
+                    "UPDATE benchmark_trials
+                     SET status = 'cancelled', exclusion_reason = 'run cancelled',
+                         completed_at = datetime('now')
+                     WHERE run_id = ?1 AND status IN ('pending', 'running')",
+                    [run_id],
+                );
+                let _ = conn.execute(
+                    "UPDATE benchmark_runs
+                     SET status = 'cancelled', outcome_status = 'cancelled',
+                         failure_reason = 'operator cancelled run', comparable = 0,
+                         comparability_notes = 'Run was cancelled before all measured trials completed',
+                         completed_at = datetime('now')
+                     WHERE id = ?1",
+                    [run_id],
+                );
+            }
             let _ = app.emit(
                 "benchmark:error",
                 BenchmarkErrorPayload {
@@ -858,12 +1395,69 @@ pub async fn start_benchmark(
                     message: "Benchmark cancelled".into(),
                 },
             );
+        } else if let Some(error) = fatal_failure {
+            if let Ok(conn) = db::get_db().lock() {
+                let _ = conn.execute(
+                    "UPDATE benchmark_runs
+                     SET status = 'cancelled', outcome_status = 'failed', failure_reason = ?1,
+                         comparable = 0, comparability_notes = 'Persistence failure invalidated the run',
+                         completed_at = datetime('now')
+                     WHERE id = ?2",
+                    rusqlite::params![error, run_id],
+                );
+            }
+            let _ = app.emit(
+                "benchmark:error",
+                BenchmarkErrorPayload {
+                    run_id,
+                    message: error,
+                },
+            );
         } else {
-            let _ = update_run_status(run_id, "completed");
+            if let Err(error) = create_completed_comparisons(run_id, &model_ids) {
+                invalid_trials += 1;
+                eprintln!("comparison preparation failed for run {run_id}: {error}");
+            }
+            let completed_measured = if let Ok(conn) = db::get_db().lock() {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM benchmark_trials
+                     WHERE run_id = ?1 AND trial_kind = 'measured' AND status = 'completed'",
+                    [run_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap_or(0) as usize
+            } else {
+                0
+            };
+            let comparable = completed_measured == measured_trial_count && invalid_trials == 0;
+            let outcome = if comparable {
+                "completed"
+            } else {
+                "completed_with_failures"
+            };
+            let notes = if comparable {
+                format!(
+                    "All {measured_trial_count} measured trials completed under one immutable manifest"
+                )
+            } else {
+                format!(
+                    "Only {completed_measured} of {measured_trial_count} measured trials were valid; recommendation withheld"
+                )
+            };
+            if let Ok(conn) = db::get_db().lock() {
+                let _ = conn.execute(
+                    "UPDATE benchmark_runs
+                     SET status = 'completed', outcome_status = ?1, comparable = ?2,
+                         comparability_notes = ?3, completed_at = datetime('now')
+                     WHERE id = ?4",
+                    rusqlite::params![outcome, i64::from(comparable), notes, run_id],
+                );
+            }
             let _ = app.emit("benchmark:complete", BenchmarkCompletePayload { run_id });
         }
 
-        // Persist collected hardware metrics to DB
+        metrics_stop.cancel();
+        let _ = metrics_handle.await;
         if let Ok(samples) = metrics_samples.lock() {
             if !samples.is_empty() {
                 if let Ok(json) = serde_json::to_string(&*samples) {
@@ -879,6 +1473,7 @@ pub async fn start_benchmark(
         }
 
         cleanup_token(&active_map, run_id);
+        let _ = (run_key, manifest_digest);
     });
 
     Ok(run_id)
@@ -927,12 +1522,15 @@ pub async fn get_benchmark_results(run_id: i64) -> Result<Vec<BenchmarkResult>, 
                      ORDER BY bs.created_at DESC LIMIT 1),
                     (SELECT bs.notes FROM benchmark_scores bs
                      WHERE bs.result_id = br.id AND bs.scoring_method = 'auto_judge'
-                     ORDER BY bs.created_at DESC LIMIT 1)
+                     ORDER BY bs.created_at DESC LIMIT 1),
+                    br.repetition_index, bt.trial_key, br.generation_seed,
+                    COALESCE(bt.status, 'legacy')
              FROM benchmark_results br
              JOIN models m ON br.model_id = m.id
              JOIN prompts p ON br.prompt_id = p.id
-             WHERE br.run_id = ?1
-             ORDER BY p.category, p.sort_order, m.display_name",
+             LEFT JOIN benchmark_trials bt ON bt.id = br.trial_id
+             WHERE br.run_id = ?1 AND br.trial_kind != 'warmup'
+             ORDER BY p.category, p.sort_order, m.display_name, br.repetition_index",
         )
         .map_err(|e| format!("query error: {e}"))?;
 
@@ -955,6 +1553,10 @@ pub async fn get_benchmark_results(run_id: i64) -> Result<Vec<BenchmarkResult>, 
                 manual_score: row.get(13)?,
                 auto_judge_score: row.get(14)?,
                 auto_judge_notes: row.get(15)?,
+                repetition_index: row.get(16)?,
+                trial_key: row.get(17)?,
+                generation_seed: row.get(18)?,
+                trial_status: row.get(19)?,
             })
         })
         .map_err(|e| format!("query error: {e}"))?
@@ -995,7 +1597,12 @@ pub async fn list_benchmark_runs(
                      JOIN benchmark_scores bs2 ON bs2.result_id = res2.id
                      WHERE res2.run_id = br.id),
                     (SELECT COUNT(*) FROM benchmark_results res3 WHERE res3.run_id = br.id),
-                    br.started_at, br.completed_at
+                    br.started_at, br.completed_at, br.outcome_status, br.repetitions,
+                    (SELECT COUNT(*) FROM benchmark_trials t
+                     WHERE t.run_id = br.id AND t.status IN ('failed', 'timeout')),
+                    (SELECT COUNT(*) FROM benchmark_trials t
+                     WHERE t.run_id = br.id AND t.status = 'excluded'),
+                    br.comparable, br.comparability_notes, br.manifest_digest
              FROM benchmark_runs br
              JOIN test_suites ts ON br.suite_id = ts.id
              WHERE (?1 IS NULL OR br.suite_id = ?1)
@@ -1016,6 +1623,13 @@ pub async fn list_benchmark_runs(
                 total_results: row.get(7)?,
                 started_at: row.get(8)?,
                 completed_at: row.get(9)?,
+                outcome_status: row.get(10)?,
+                repetitions: row.get(11)?,
+                failed_count: row.get(12)?,
+                excluded_count: row.get(13)?,
+                comparable: row.get::<_, i64>(14)? != 0,
+                comparability_notes: row.get(15)?,
+                manifest_digest: row.get(16)?,
             })
         })
         .map_err(|e| format!("query error: {e}"))?
@@ -1089,15 +1703,25 @@ pub async fn auto_judge_benchmark(
     judge_model_id: i64,
 ) -> Result<(), String> {
     // Get judge model name
-    let judge_model_name: String = {
+    let (judge_model_name, judge_digest): (String, Option<String>) = {
         let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
         conn.query_row(
-            "SELECT name FROM models WHERE id = ?1",
+            "SELECT name, digest FROM models WHERE id = ?1",
             rusqlite::params![judge_model_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(|e| format!("judge model not found (id={judge_model_id}): {e}"))?
     };
+    let judge_manifest_json = serde_json::to_string(&serde_json::json!({
+        "exact_tag": judge_model_name,
+        "digest": judge_digest,
+        "ollama_version": ollama::get_version().await?,
+        "system_prompt": "You are a strict but fair evaluator. Output only valid JSON.",
+        "temperature": 0.1,
+        "num_predict": 256,
+        "judge_prompt_digest": evaluation::sha256_hex(build_judge_prompt("{prompt}", Some("{criteria}"), "{output}").as_bytes()),
+    }))
+    .map_err(|e| format!("judge manifest serialize error: {e}"))?;
 
     // Collect results that need judging: no auto_judge score yet, not self-judging
     // (result_id, model_name, prompt_text, eval_criteria, output)
@@ -1109,7 +1733,10 @@ pub async fn auto_judge_benchmark(
                  FROM benchmark_results br
                  JOIN models m ON br.model_id = m.id
                  JOIN prompts p ON br.prompt_id = p.id
+                 JOIN benchmark_trials bt ON bt.id = br.trial_id
                  WHERE br.run_id = ?1
+                   AND bt.trial_kind = 'measured'
+                   AND bt.status = 'completed'
                    AND br.model_id != ?2
                    AND NOT EXISTS (
                        SELECT 1 FROM benchmark_scores bs
@@ -1174,11 +1801,41 @@ pub async fn auto_judge_benchmark(
                 system: Some("You are a strict but fair evaluator. Output only valid JSON.".into()),
                 num_predict: Some(256),
                 temperature: Some(0.1),
+                think: Some(false),
+                seed: None,
+            };
+
+            let attempt_id = {
+                let conn = match db::get_db().lock() {
+                    Ok(conn) => conn,
+                    Err(error) => {
+                        eprintln!("auto_judge: db lock error for result {result_id}: {error}");
+                        continue;
+                    }
+                };
+                if let Err(error) = conn.execute(
+                    "INSERT INTO benchmark_judge_attempts
+                        (run_id, result_id, judge_model_id, judge_manifest_json)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![run_id, result_id, judge_model_id, judge_manifest_json],
+                ) {
+                    eprintln!("auto_judge: attempt insert error for result {result_id}: {error}");
+                    continue;
+                }
+                conn.last_insert_rowid()
             };
 
             let rx = match ollama::generate_stream(req).await {
                 Ok(rx) => rx,
                 Err(e) => {
+                    if let Ok(conn) = db::get_db().lock() {
+                        let _ = conn.execute(
+                            "UPDATE benchmark_judge_attempts
+                             SET status = 'failed', error_message = ?1,
+                                 completed_at = datetime('now') WHERE id = ?2",
+                            rusqlite::params![e, attempt_id],
+                        );
+                    }
                     eprintln!("auto_judge: stream error for result {result_id}: {e}");
                     continue;
                 }
@@ -1209,6 +1866,14 @@ pub async fn auto_judge_benchmark(
             }
 
             if cancel_token.is_cancelled() {
+                if let Ok(conn) = db::get_db().lock() {
+                    let _ = conn.execute(
+                        "UPDATE benchmark_judge_attempts
+                         SET status = 'cancelled', raw_output = ?1,
+                             completed_at = datetime('now') WHERE id = ?2",
+                        rusqlite::params![buffer, attempt_id],
+                    );
+                }
                 break;
             }
 
@@ -1218,8 +1883,9 @@ pub async fn auto_judge_benchmark(
                         let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
                         conn.execute(
                             "INSERT INTO benchmark_scores
-                                (result_id, score, scoring_method, judge_model_id, notes)
-                             VALUES (?1, ?2, 'auto_judge', ?3, ?4)",
+                                (result_id, score, scoring_method, judge_model_id, notes,
+                                 judge_manifest_json, raw_judge_output, status)
+                             VALUES (?1, ?2, 'auto_judge', ?3, ?4, ?5, ?6, 'completed')",
                             rusqlite::params![
                                 result_id,
                                 score,
@@ -1229,6 +1895,8 @@ pub async fn auto_judge_benchmark(
                                 } else {
                                     Some(reasoning)
                                 },
+                                judge_manifest_json,
+                                buffer,
                             ],
                         )
                         .map_err(|e| format!("insert score error: {e}"))?;
@@ -1236,12 +1904,37 @@ pub async fn auto_judge_benchmark(
                     })();
 
                     if let Err(e) = save_result {
+                        if let Ok(conn) = db::get_db().lock() {
+                            let _ = conn.execute(
+                                "UPDATE benchmark_judge_attempts
+                                 SET status = 'failed', raw_output = ?1, error_message = ?2,
+                                     completed_at = datetime('now') WHERE id = ?3",
+                                rusqlite::params![buffer, e, attempt_id],
+                            );
+                        }
                         eprintln!("auto_judge: save error: {e}");
                     } else {
+                        if let Ok(conn) = db::get_db().lock() {
+                            let _ = conn.execute(
+                                "UPDATE benchmark_judge_attempts
+                                 SET status = 'completed', raw_output = ?1,
+                                     completed_at = datetime('now') WHERE id = ?2",
+                                rusqlite::params![buffer, attempt_id],
+                            );
+                        }
                         scores_added += 1;
                     }
                 }
                 None => {
+                    if let Ok(conn) = db::get_db().lock() {
+                        let _ = conn.execute(
+                            "UPDATE benchmark_judge_attempts
+                             SET status = 'invalid', raw_output = ?1,
+                                 error_message = 'judge response could not be parsed',
+                                 completed_at = datetime('now') WHERE id = ?2",
+                            rusqlite::params![buffer, attempt_id],
+                        );
+                    }
                     eprintln!(
                         "auto_judge: failed to parse response for result {result_id}: {:?}",
                         &buffer[..buffer.len().min(200)]
@@ -1283,7 +1976,424 @@ pub async fn cancel_auto_judge(
     if let Some(token) = map.get(&run_id) {
         token.cancel();
     }
+    if let Ok(conn) = db::get_db().lock() {
+        let _ = conn.execute(
+            "UPDATE benchmark_judge_attempts
+             SET status = 'cancelled', completed_at = datetime('now')
+             WHERE run_id = ?1 AND status = 'running'",
+            [run_id],
+        );
+    }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn get_run_evidence(run_id: i64) -> Result<RunEvidence, String> {
+    let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+    let (outcome_status, manifest_digest, comparable, comparability_notes): (
+        String,
+        Option<String>,
+        i64,
+        Option<String>,
+    ) = conn
+        .query_row(
+            "SELECT outcome_status, manifest_digest, comparable, comparability_notes
+             FROM benchmark_runs WHERE id = ?1",
+            [run_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .map_err(|e| format!("run not found (id={run_id}): {e}"))?;
+
+    let counts: (i64, i64, i64, i64, i64, i64) = conn
+        .query_row(
+            "SELECT
+                SUM(CASE WHEN trial_kind = 'measured' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN trial_kind = 'measured' AND status = 'completed' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN status = 'excluded' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN status = 'timeout' THEN 1 ELSE 0 END)
+             FROM benchmark_trials WHERE run_id = ?1",
+            [run_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<i64>>(0)?.unwrap_or(0),
+                    row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                    row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                    row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                    row.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                    row.get::<_, Option<i64>>(5)?.unwrap_or(0),
+                ))
+            },
+        )
+        .map_err(|e| format!("trial count error: {e}"))?;
+
+    type ScoreRow = (String, i64, String, Option<f64>, Option<f64>);
+    let mut score_stmt = conn
+        .prepare(
+            "SELECT p.category, br.model_id, m.display_name,
+                    (SELECT CAST(bs.score AS REAL) FROM benchmark_scores bs
+                     WHERE bs.result_id = br.id AND bs.scoring_method = 'auto_judge'
+                       AND bs.status = 'completed'
+                     ORDER BY bs.created_at DESC LIMIT 1),
+                    (SELECT CAST(bs.score AS REAL) * 2.0 FROM benchmark_scores bs
+                     WHERE bs.result_id = br.id AND bs.scoring_method = 'manual'
+                       AND bs.status = 'completed'
+                     ORDER BY bs.created_at DESC LIMIT 1)
+             FROM benchmark_results br
+             JOIN benchmark_trials bt ON bt.id = br.trial_id
+             JOIN prompts p ON p.id = br.prompt_id
+             JOIN models m ON m.id = br.model_id
+             WHERE br.run_id = ?1 AND bt.trial_kind = 'measured' AND bt.status = 'completed'",
+        )
+        .map_err(|e| format!("evidence query error: {e}"))?;
+    let score_rows: Vec<ScoreRow> = score_stmt
+        .query_map([run_id], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })
+        .map_err(|e| format!("evidence query error: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("evidence row error: {e}"))?;
+
+    let mut grouped: HashMap<(String, i64, String, String), Vec<f64>> = HashMap::new();
+    for (category, model_id, model_name, auto_score, manual_score) in score_rows {
+        if let Some(score) = auto_score {
+            grouped
+                .entry((
+                    category.clone(),
+                    model_id,
+                    model_name.clone(),
+                    "auto_judge".into(),
+                ))
+                .or_default()
+                .push(score);
+        }
+        if let Some(score) = manual_score {
+            grouped
+                .entry((category, model_id, model_name, "human_score".into()))
+                .or_default()
+                .push(score);
+        }
+    }
+    let mut capability_evidence: Vec<CapabilityEvidence> = grouped
+        .into_iter()
+        .map(
+            |((category, model_id, model_name, scoring_method), values)| CapabilityEvidence {
+                category,
+                model_id,
+                model_name,
+                scoring_method,
+                confidence: evaluation::mean_confidence_95(&values),
+            },
+        )
+        .collect();
+    capability_evidence.sort_by(|a, b| {
+        a.category
+            .cmp(&b.category)
+            .then(a.scoring_method.cmp(&b.scoring_method))
+            .then(a.model_name.cmp(&b.model_name))
+    });
+
+    let mut recommendation_groups: HashMap<String, Vec<&CapabilityEvidence>> = HashMap::new();
+    for evidence in &capability_evidence {
+        recommendation_groups
+            .entry(evidence.category.clone())
+            .or_default()
+            .push(evidence);
+    }
+    let mut recommendations = Vec::new();
+    for (category, all_evidence) in recommendation_groups {
+        let human: Vec<_> = all_evidence
+            .iter()
+            .copied()
+            .filter(|entry| entry.scoring_method == "human_score")
+            .collect();
+        let auto: Vec<_> = all_evidence
+            .iter()
+            .copied()
+            .filter(|entry| entry.scoring_method == "auto_judge")
+            .collect();
+        let mut selected = if human.len() >= 2 { human } else { auto };
+        selected.sort_by(|a, b| {
+            b.confidence
+                .mean
+                .partial_cmp(&a.confidence.mean)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let recommendation = if comparable == 0 {
+            CapabilityRecommendation {
+                category,
+                recommended_model: None,
+                confidence: "withheld".into(),
+                reason: "Run is incomplete or incomparable; no recommendation is allowed".into(),
+            }
+        } else if selected.len() < 2 {
+            CapabilityRecommendation {
+                category,
+                recommended_model: None,
+                confidence: "insufficient evidence".into(),
+                reason: "At least two models need scores from the same judge method".into(),
+            }
+        } else if !selected[0].confidence.sufficient_sample
+            || !selected[1].confidence.sufficient_sample
+        {
+            CapabilityRecommendation {
+                category,
+                recommended_model: None,
+                confidence: "insufficient sample".into(),
+                reason: format!(
+                    "{} and {} do not both meet the repeated-sample threshold",
+                    selected[0].model_name, selected[1].model_name
+                ),
+            }
+        } else {
+            let top = selected[0];
+            let runner_up = selected[1];
+            let separated = match (top.confidence.lower_95, runner_up.confidence.upper_95) {
+                (Some(top_low), Some(other_high)) => top_low > other_high,
+                _ => false,
+            };
+            if separated {
+                CapabilityRecommendation {
+                    category,
+                    recommended_model: Some(top.model_name.clone()),
+                    confidence: "directional".into(),
+                    reason: format!(
+                        "{} leads {} using {} and the approximate 95% intervals do not overlap",
+                        top.model_name, runner_up.model_name, top.scoring_method
+                    ),
+                }
+            } else {
+                CapabilityRecommendation {
+                    category,
+                    recommended_model: None,
+                    confidence: "inconclusive".into(),
+                    reason: format!(
+                        "{} and {} have overlapping uncertainty intervals",
+                        top.model_name, runner_up.model_name
+                    ),
+                }
+            }
+        };
+        recommendations.push(recommendation);
+    }
+    recommendations.sort_by(|a, b| a.category.cmp(&b.category));
+
+    let human_outcomes: Vec<SideOutcome> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT human_outcome FROM benchmark_comparisons
+                 WHERE run_id = ?1 AND human_outcome IN ('left', 'right', 'tie')",
+            )
+            .map_err(|e| format!("human vote query error: {e}"))?;
+        let values = stmt
+            .query_map([run_id], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("human vote query error: {e}"))?
+            .filter_map(|value| match value.ok()?.as_str() {
+                "left" => Some(SideOutcome::Left),
+                "right" => Some(SideOutcome::Right),
+                "tie" => Some(SideOutcome::Tie),
+                _ => None,
+            })
+            .collect();
+        values
+    };
+    let position_bias = evaluation::detect_position_bias(&human_outcomes);
+
+    let disagreement_pairs: Vec<(SideOutcome, SideOutcome)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT bc.human_outcome, bc.model_a_position,
+                    (SELECT bs.score FROM benchmark_scores bs
+                     WHERE bs.result_id = bc.result_a_id AND bs.scoring_method = 'auto_judge'
+                       AND bs.status = 'completed' ORDER BY bs.created_at DESC LIMIT 1),
+                    (SELECT bs.score FROM benchmark_scores bs
+                     WHERE bs.result_id = bc.result_b_id AND bs.scoring_method = 'auto_judge'
+                       AND bs.status = 'completed' ORDER BY bs.created_at DESC LIMIT 1)
+                 FROM benchmark_comparisons bc
+                 WHERE bc.run_id = ?1 AND bc.human_outcome IN ('left', 'right', 'tie')",
+            )
+            .map_err(|e| format!("disagreement query error: {e}"))?;
+        let values = stmt
+            .query_map([run_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                ))
+            })
+            .map_err(|e| format!("disagreement query error: {e}"))?
+            .filter_map(|row| {
+                let (human, model_a_position, score_a, score_b) = row.ok()?;
+                let human = match human.as_str() {
+                    "left" => SideOutcome::Left,
+                    "right" => SideOutcome::Right,
+                    "tie" => SideOutcome::Tie,
+                    _ => return None,
+                };
+                let (score_a, score_b) = (score_a?, score_b?);
+                let auto = if score_a == score_b {
+                    SideOutcome::Tie
+                } else {
+                    let a_wins = score_a > score_b;
+                    let winner_is_left = (a_wins && model_a_position == "left")
+                        || (!a_wins && model_a_position == "right");
+                    if winner_is_left {
+                        SideOutcome::Left
+                    } else {
+                        SideOutcome::Right
+                    }
+                };
+                Some((human, auto))
+            })
+            .collect();
+        values
+    };
+    let judge_disagreement = evaluation::judge_disagreement(&disagreement_pairs);
+
+    let mut judge_provenance: Vec<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT DISTINCT m.name, m.digest
+                 FROM benchmark_judge_attempts a JOIN models m ON m.id = a.judge_model_id
+                 WHERE a.run_id = ?1 AND a.status = 'completed'",
+            )
+            .map_err(|e| format!("judge provenance query error: {e}"))?;
+        let values = stmt
+            .query_map([run_id], |row| {
+                let name: String = row.get(0)?;
+                let digest: Option<String> = row.get(1)?;
+                Ok(match digest {
+                    Some(value) => format!("auto-judge {name}@{}", &value[..value.len().min(12)]),
+                    None => format!("auto-judge {name} (digest unavailable)"),
+                })
+            })
+            .map_err(|e| format!("judge provenance query error: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("judge provenance row error: {e}"))?;
+        values
+    };
+    if capability_evidence
+        .iter()
+        .any(|entry| entry.scoring_method == "human_score")
+    {
+        judge_provenance.push("human scalar scores".into());
+    }
+    if !human_outcomes.is_empty() {
+        judge_provenance.push("human blind comparisons".into());
+    }
+
+    let left_count = conn
+        .query_row(
+            "SELECT COUNT(*) FROM benchmark_comparisons
+             WHERE run_id = ?1 AND model_a_position = 'left'",
+            [run_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0);
+    let right_count = conn
+        .query_row(
+            "SELECT COUNT(*) FROM benchmark_comparisons
+             WHERE run_id = ?1 AND model_a_position = 'right'",
+            [run_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0);
+    let elo_eligible = evaluation::is_elo_eligible(EloEligibility {
+        run_complete: outcome_status == "completed",
+        all_trials_valid: counts.0 == counts.1,
+        comparable: comparable != 0,
+        positions_balanced: (left_count - right_count).abs() <= 1,
+        human_judged: !human_outcomes.is_empty(),
+        sample_size: human_outcomes.len(),
+    });
+
+    Ok(RunEvidence {
+        run_id,
+        outcome_status,
+        manifest_digest,
+        comparable: comparable != 0,
+        comparability_notes,
+        planned_measured_trials: counts.0,
+        completed_measured_trials: counts.1,
+        failed_trials: counts.2,
+        excluded_trials: counts.3,
+        cancelled_trials: counts.4,
+        timeout_trials: counts.5,
+        hardware_dependent: true,
+        capability_evidence,
+        recommendations,
+        position_bias,
+        judge_disagreement,
+        judge_provenance,
+        elo_eligible,
+        elo_updated: false,
+    })
+}
+
+#[tauri::command]
+pub async fn get_run_comparability(run_a: i64, run_b: i64) -> Result<RunComparability, String> {
+    let load = |run_id: i64| -> Result<(bool, RunManifest), String> {
+        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        let (comparable, manifest_json): (i64, String) = conn
+            .query_row(
+                "SELECT br.comparable, erm.manifest_json
+                 FROM benchmark_runs br
+                 JOIN evaluation_run_manifests erm ON erm.run_id = br.id
+                 WHERE br.id = ?1",
+                [run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|e| format!("run {run_id} has no reproducibility manifest: {e}"))?;
+        let manifest = serde_json::from_str(&manifest_json)
+            .map_err(|e| format!("run {run_id} manifest is invalid: {e}"))?;
+        Ok((comparable != 0, manifest))
+    };
+    let (valid_a, a) = load(run_a)?;
+    let (valid_b, b) = load(run_b)?;
+    let mut reasons = Vec::new();
+    if !valid_a || !valid_b {
+        reasons.push("One or both runs contain invalid or incomplete trials".into());
+    }
+    if a.suite.digest != b.suite.digest {
+        reasons.push("Suite or prompt digest differs".into());
+    }
+    if a.ollama.server_version != b.ollama.server_version {
+        reasons.push("Ollama server version differs".into());
+    }
+    if digest_json(&a.hardware)? != digest_json(&b.hardware)? {
+        reasons.push("Hardware/runtime snapshot differs".into());
+    }
+    let model_keys = |manifest: &RunManifest| {
+        manifest
+            .models
+            .iter()
+            .map(|model| (model.exact_tag.clone(), model.digest.clone()))
+            .collect::<Vec<_>>()
+    };
+    if model_keys(&a) != model_keys(&b) {
+        reasons.push("Exact model tags or digests differ".into());
+    }
+    let settings_equal = a.generation.repetitions == b.generation.repetitions
+        && a.generation.warmup_repetitions == b.generation.warmup_repetitions
+        && a.generation.timeout_seconds == b.generation.timeout_seconds
+        && a.generation.temperature == b.generation.temperature
+        && a.generation.num_predict == b.generation.num_predict
+        && a.generation.think == b.generation.think;
+    if !settings_equal {
+        reasons.push("Generation or trial settings differ".into());
+    }
+    Ok(RunComparability {
+        comparable: reasons.is_empty(),
+        reasons,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1318,7 +2428,14 @@ pub async fn get_benchmark_leaderboard() -> Result<Vec<BenchmarkLeaderboardEntry
                     AVG(br.time_to_first_token_ms)
              FROM benchmark_results br
              JOIN benchmark_scores bs ON bs.result_id = br.id
+             JOIN benchmark_runs run ON run.id = br.run_id
+             JOIN benchmark_trials bt ON bt.id = br.trial_id
              JOIN models m ON br.model_id = m.id
+             WHERE run.comparable = 1
+               AND bt.trial_kind = 'measured'
+               AND bt.status = 'completed'
+               AND bs.scoring_method = 'auto_judge'
+               AND bs.status = 'completed'
              GROUP BY m.id
              ORDER BY AVG(CASE bs.scoring_method
                               WHEN 'manual' THEN bs.score * 2.0
@@ -1353,7 +2470,14 @@ pub async fn get_benchmark_leaderboard() -> Result<Vec<BenchmarkLeaderboardEntry
                         END)
              FROM benchmark_results br
              JOIN benchmark_scores bs ON bs.result_id = br.id
+             JOIN benchmark_runs run ON run.id = br.run_id
+             JOIN benchmark_trials bt ON bt.id = br.trial_id
              JOIN prompts p ON br.prompt_id = p.id
+             WHERE run.comparable = 1
+               AND bt.trial_kind = 'measured'
+               AND bt.status = 'completed'
+               AND bs.scoring_method = 'auto_judge'
+               AND bs.status = 'completed'
              GROUP BY br.model_id, p.category",
         )
         .map_err(|e| format!("category query error: {e}"))?;
@@ -1484,117 +2608,98 @@ pub async fn get_run_comparison(run_a: i64, run_b: i64) -> Result<Vec<RunCompari
 // Blind comparison commands
 // ---------------------------------------------------------------------------
 
-/// prompt_id → model_id → (result_id, output, title, category)
-type ByPromptMap = HashMap<i64, HashMap<i64, (i64, String, String, String)>>;
-
 #[tauri::command]
 pub async fn start_blind_comparison(
     state: tauri::State<'_, ActiveBlindComparisons>,
     run_id: i64,
 ) -> Result<BlindComparison, String> {
-    // Query all benchmark_results for this run
-    let results: Vec<(i64, i64, i64, String, String, String)> = {
+    type BlindRow = (
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        String,
+        String,
+        String,
+        String,
+        String,
+    );
+    let rows: Vec<BlindRow> = {
         let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
         let mut stmt = conn
             .prepare(
-                "SELECT br.id, br.model_id, br.prompt_id, br.output, p.title, p.category
-                 FROM benchmark_results br
-                 JOIN prompts p ON br.prompt_id = p.id
-                 WHERE br.run_id = ?1
-                 ORDER BY br.prompt_id, br.model_id",
+                "SELECT bc.id, bc.prompt_id, bc.repetition_index,
+                        bc.model_a_id, bc.model_b_id, bc.result_a_id, bc.result_b_id,
+                        bc.model_a_position,
+                        a.output, b.output, p.title, p.category
+                 FROM benchmark_comparisons bc
+                 JOIN benchmark_results a ON a.id = bc.result_a_id
+                 JOIN benchmark_results b ON b.id = bc.result_b_id
+                 JOIN prompts p ON p.id = bc.prompt_id
+                 WHERE bc.run_id = ?1 AND bc.human_outcome IS NULL
+                 ORDER BY bc.prompt_id, bc.repetition_index",
             )
             .map_err(|e| format!("query error: {e}"))?;
-        let rows: Vec<_> = stmt
+        let values = stmt
             .query_map(rusqlite::params![run_id], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, i64>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, String>(11)?,
                 ))
             })
             .map_err(|e| format!("query error: {e}"))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("row error: {e}"))?;
-        rows
+        values
     };
-
-    // Derive distinct model set
-    let mut model_ids: Vec<i64> = results.iter().map(|r| r.1).collect();
-    model_ids.sort_unstable();
-    model_ids.dedup();
-
-    if model_ids.len() != 2 {
-        return Err(format!(
-            "Blind comparison requires exactly 2 models, found {}",
-            model_ids.len()
-        ));
-    }
-    let model_a_id = model_ids[0];
-    let model_b_id = model_ids[1];
-
-    // Group results by prompt_id
-    let mut by_prompt: ByPromptMap = HashMap::new();
-    for (result_id, model_id, prompt_id, output, title, category) in &results {
-        by_prompt.entry(*prompt_id).or_default().insert(
-            *model_id,
-            (*result_id, output.clone(), title.clone(), category.clone()),
-        );
-    }
-
-    // Build pairs with random left/right assignment
+    let first = rows
+        .first()
+        .ok_or_else(|| "No unjudged, valid comparison trials are available".to_string())?;
+    let model_a_id = first.3;
+    let model_b_id = first.4;
     let mut prompt_assignments: HashMap<i64, (i64, i64, bool)> = HashMap::new();
     let mut pairs: Vec<BlindPair> = Vec::new();
-
-    let mut sorted_prompts: Vec<i64> = by_prompt.keys().copied().collect();
-    sorted_prompts.sort_unstable();
-
-    let base_nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-
-    for (idx, prompt_id) in sorted_prompts.iter().enumerate() {
-        let prompt_map = match by_prompt.get(prompt_id) {
-            Some(m) => m,
-            None => continue,
-        };
-        let (result_a_id, output_a, title, category) = match prompt_map.get(&model_a_id) {
-            Some(v) => v,
-            None => continue,
-        };
-        let (result_b_id, output_b, _, _) = match prompt_map.get(&model_b_id) {
-            Some(v) => v,
-            None => continue,
-        };
-
-        // Random left/right: XOR nanos with prompt index
-        let a_is_left = (base_nanos ^ (idx as u32)).is_multiple_of(2);
-
+    for (
+        comparison_id,
+        prompt_id,
+        repetition_index,
+        _,
+        _,
+        result_a_id,
+        result_b_id,
+        model_a_position,
+        output_a,
+        output_b,
+        title,
+        category,
+    ) in rows
+    {
+        let a_is_left = model_a_position == "left";
         let (left_result_id, left_output, right_result_id, right_output) = if a_is_left {
-            (
-                *result_a_id,
-                output_a.clone(),
-                *result_b_id,
-                output_b.clone(),
-            )
+            (result_a_id, output_a, result_b_id, output_b)
         } else {
-            (
-                *result_b_id,
-                output_b.clone(),
-                *result_a_id,
-                output_a.clone(),
-            )
+            (result_b_id, output_b, result_a_id, output_a)
         };
-
-        prompt_assignments.insert(*prompt_id, (*result_a_id, *result_b_id, a_is_left));
-
+        prompt_assignments.insert(comparison_id, (result_a_id, result_b_id, a_is_left));
         pairs.push(BlindPair {
-            prompt_id: *prompt_id,
-            prompt_title: title.clone(),
-            prompt_category: category.clone(),
+            comparison_id,
+            prompt_id,
+            repetition_index,
+            prompt_title: title,
+            prompt_category: category,
             left_result_id,
             left_output,
             right_result_id,
@@ -1622,52 +2727,33 @@ pub async fn start_blind_comparison(
 pub async fn submit_blind_pick(
     state: tauri::State<'_, ActiveBlindComparisons>,
     run_id: i64,
-    prompt_id: i64,
+    comparison_id: i64,
     winner: String,
 ) -> Result<(), String> {
-    let (result_a_id, result_b_id, a_is_left) = {
+    let (result_a_id, result_b_id, a_is_left, model_a_id, model_b_id) = {
         let map = state.0.lock().map_err(|e| format!("state lock: {e}"))?;
         let st = map
             .get(&run_id)
             .ok_or_else(|| format!("no active blind comparison for run {run_id}"))?;
         let assignment = st
             .prompt_assignments
-            .get(&prompt_id)
-            .ok_or_else(|| format!("prompt {prompt_id} not found in blind comparison"))?;
-        *assignment
+            .get(&comparison_id)
+            .ok_or_else(|| format!("comparison {comparison_id} not found in blind comparison"))?;
+        (
+            assignment.0,
+            assignment.1,
+            assignment.2,
+            st.model_a_id,
+            st.model_b_id,
+        )
     };
 
-    // Resolve left/right → model_a/model_b winner
-    let (winner_result_id, loser_result_id) = match winner.as_str() {
-        "left" => {
-            if a_is_left {
-                (result_a_id, result_b_id)
-            } else {
-                (result_b_id, result_a_id)
-            }
-        }
-        "right" => {
-            if a_is_left {
-                (result_b_id, result_a_id)
-            } else {
-                (result_a_id, result_b_id)
-            }
-        }
-        "tie" => {
-            // Both get tie score
-            let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
-            conn.execute(
-                "INSERT INTO benchmark_scores (result_id, score, scoring_method) VALUES (?1, 5, 'head_to_head')",
-                rusqlite::params![result_a_id],
-            )
-            .map_err(|e| format!("insert score error: {e}"))?;
-            conn.execute(
-                "INSERT INTO benchmark_scores (result_id, score, scoring_method) VALUES (?1, 5, 'head_to_head')",
-                rusqlite::params![result_b_id],
-            )
-            .map_err(|e| format!("insert score error: {e}"))?;
-            return Ok(());
-        }
+    let winner_model_id = match winner.as_str() {
+        "left" if a_is_left => Some(model_a_id),
+        "left" => Some(model_b_id),
+        "right" if a_is_left => Some(model_b_id),
+        "right" => Some(model_a_id),
+        "tie" => None,
         other => {
             return Err(format!(
                 "invalid winner value: '{other}' (expected left|right|tie)"
@@ -1677,15 +2763,15 @@ pub async fn submit_blind_pick(
 
     let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
     conn.execute(
-        "INSERT INTO benchmark_scores (result_id, score, scoring_method) VALUES (?1, 10, 'head_to_head')",
-        rusqlite::params![winner_result_id],
+        "UPDATE benchmark_comparisons
+         SET human_outcome = ?1, human_winner_model_id = ?2,
+             human_judged_at = datetime('now')
+         WHERE id = ?3 AND run_id = ?4 AND human_outcome IS NULL",
+        rusqlite::params![winner, winner_model_id, comparison_id, run_id],
     )
-    .map_err(|e| format!("insert winner score error: {e}"))?;
-    conn.execute(
-        "INSERT INTO benchmark_scores (result_id, score, scoring_method) VALUES (?1, 1, 'head_to_head')",
-        rusqlite::params![loser_result_id],
-    )
-    .map_err(|e| format!("insert loser score error: {e}"))?;
+    .map_err(|e| format!("save blind judgment error: {e}"))?;
+
+    let _ = (result_a_id, result_b_id);
 
     Ok(())
 }
@@ -1723,76 +2809,38 @@ pub async fn finish_blind_comparison(
         (name_a, name_b)
     };
 
-    // Query all head_to_head scores for this run
-    // result_id → (model_id, prompt_id, score)
-    let score_rows: Vec<(i64, i64, i64, i64)> = {
+    let judgments: Vec<(i64, String, Option<i64>, String)> = {
         let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
         let mut stmt = conn
             .prepare(
-                "SELECT bs.result_id, br.model_id, br.prompt_id, bs.score
-                 FROM benchmark_scores bs
-                 JOIN benchmark_results br ON bs.result_id = br.id
-                 WHERE br.run_id = ?1 AND bs.scoring_method = 'head_to_head'
-                 ORDER BY br.prompt_id",
+                "SELECT bc.prompt_id, p.title, bc.human_winner_model_id, bc.human_outcome
+                 FROM benchmark_comparisons bc
+                 JOIN prompts p ON p.id = bc.prompt_id
+                 WHERE bc.run_id = ?1
+                   AND bc.human_outcome IN ('left', 'right', 'tie')
+                 ORDER BY bc.prompt_id, bc.repetition_index",
             )
             .map_err(|e| format!("query error: {e}"))?;
-        let rows: Vec<_> = stmt
+        let values = stmt
             .query_map(rusqlite::params![run_id], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
             })
             .map_err(|e| format!("query error: {e}"))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("row error: {e}"))?;
-        rows
+        values
     };
-
-    // Query prompt titles
-    let prompt_titles: HashMap<i64, String> = {
-        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT DISTINCT br.prompt_id, p.title
-                 FROM benchmark_results br
-                 JOIN prompts p ON br.prompt_id = p.id
-                 WHERE br.run_id = ?1",
-            )
-            .map_err(|e| format!("query error: {e}"))?;
-        let rows: HashMap<_, _> = stmt
-            .query_map(rusqlite::params![run_id], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(|e| format!("query error: {e}"))?
-            .collect::<Result<HashMap<_, _>, _>>()
-            .map_err(|e| format!("row error: {e}"))?;
-        rows
-    };
-
-    // Group by prompt_id: collect model_id → score
-    let mut by_prompt: HashMap<i64, HashMap<i64, i64>> = HashMap::new();
-    for (_result_id, model_id, prompt_id, score) in score_rows {
-        by_prompt
-            .entry(prompt_id)
-            .or_default()
-            .insert(model_id, score);
-    }
 
     let mut model_a_wins: i64 = 0;
     let mut model_b_wins: i64 = 0;
     let mut ties: i64 = 0;
     let mut entries: Vec<BlindRevealEntry> = Vec::new();
 
-    let mut sorted_prompts: Vec<i64> = by_prompt.keys().copied().collect();
-    sorted_prompts.sort_unstable();
-
-    for prompt_id in sorted_prompts {
-        let scores = &by_prompt[&prompt_id];
-        let score_a = scores.get(&model_a_id).copied().unwrap_or(0);
-        let score_b = scores.get(&model_b_id).copied().unwrap_or(0);
-
-        let winner_str = if score_a > score_b {
+    for (prompt_id, prompt_title, winner_model_id, outcome) in judgments {
+        let winner_str = if winner_model_id == Some(model_a_id) {
             model_a_wins += 1;
             model_a_name.clone()
-        } else if score_b > score_a {
+        } else if winner_model_id == Some(model_b_id) {
             model_b_wins += 1;
             model_b_name.clone()
         } else {
@@ -1800,9 +2848,13 @@ pub async fn finish_blind_comparison(
             "tie".to_string()
         };
 
+        if outcome == "tie" && winner_model_id.is_some() {
+            return Err("invalid persisted blind judgment: tie has a winner".into());
+        }
+
         entries.push(BlindRevealEntry {
             prompt_id,
-            prompt_title: prompt_titles.get(&prompt_id).cloned().unwrap_or_default(),
+            prompt_title,
             model_a_name: model_a_name.clone(),
             model_b_name: model_b_name.clone(),
             winner: winner_str,
@@ -1855,6 +2907,132 @@ pub async fn get_benchmark_metrics(
 // ---------------------------------------------------------------------------
 // Import/export commands
 // ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn export_evaluation_bundle(run_id: i64) -> Result<String, String> {
+    let evidence = get_run_evidence(run_id).await?;
+    let results = get_benchmark_results(run_id).await?;
+    let (manifest, trials, judge_attempts, comparisons) = {
+        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        let manifest_json: String = conn
+            .query_row(
+                "SELECT manifest_json FROM evaluation_run_manifests WHERE run_id = ?1",
+                [run_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("run {run_id} has no reproducibility manifest: {e}"))?;
+        let manifest = serde_json::from_str(&manifest_json)
+            .map_err(|e| format!("stored manifest is invalid: {e}"))?;
+
+        let mut trial_stmt = conn
+            .prepare(
+                "SELECT trial_key, prompt_id, model_id, repetition_index, trial_kind,
+                        execution_order, generation_seed, comparison_position, status,
+                        result_id, error_message, exclusion_reason, started_at, completed_at
+                 FROM benchmark_trials WHERE run_id = ?1 ORDER BY execution_order",
+            )
+            .map_err(|e| format!("trial export query error: {e}"))?;
+        let trials = trial_stmt
+            .query_map([run_id], |row| {
+                Ok(TrialExportData {
+                    trial_key: row.get(0)?,
+                    prompt_id: row.get(1)?,
+                    model_id: row.get(2)?,
+                    repetition_index: row.get(3)?,
+                    trial_kind: row.get(4)?,
+                    execution_order: row.get(5)?,
+                    generation_seed: row.get(6)?,
+                    comparison_position: row.get(7)?,
+                    status: row.get(8)?,
+                    result_id: row.get(9)?,
+                    error_message: row.get(10)?,
+                    exclusion_reason: row.get(11)?,
+                    started_at: row.get(12)?,
+                    completed_at: row.get(13)?,
+                })
+            })
+            .map_err(|e| format!("trial export query error: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("trial export row error: {e}"))?;
+
+        let mut judge_stmt = conn
+            .prepare(
+                "SELECT result_id, judge_model_id, judge_manifest_json, status,
+                        raw_output, error_message, started_at, completed_at
+                 FROM benchmark_judge_attempts WHERE run_id = ?1 ORDER BY id",
+            )
+            .map_err(|e| format!("judge export query error: {e}"))?;
+        let judge_attempts = judge_stmt
+            .query_map([run_id], |row| {
+                Ok(JudgeAttemptExportData {
+                    result_id: row.get(0)?,
+                    judge_model_id: row.get(1)?,
+                    judge_manifest_json: row.get(2)?,
+                    status: row.get(3)?,
+                    raw_output: row.get(4)?,
+                    error_message: row.get(5)?,
+                    started_at: row.get(6)?,
+                    completed_at: row.get(7)?,
+                })
+            })
+            .map_err(|e| format!("judge export query error: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("judge export row error: {e}"))?;
+
+        let mut comparison_stmt = conn
+            .prepare(
+                "SELECT id, prompt_id, repetition_index, model_a_id, model_b_id,
+                        result_a_id, result_b_id, model_a_position, human_outcome,
+                        human_winner_model_id, human_judged_at
+                 FROM benchmark_comparisons WHERE run_id = ?1
+                 ORDER BY prompt_id, repetition_index",
+            )
+            .map_err(|e| format!("comparison export query error: {e}"))?;
+        let comparisons = comparison_stmt
+            .query_map([run_id], |row| {
+                Ok(ComparisonExportData {
+                    comparison_id: row.get(0)?,
+                    prompt_id: row.get(1)?,
+                    repetition_index: row.get(2)?,
+                    model_a_id: row.get(3)?,
+                    model_b_id: row.get(4)?,
+                    result_a_id: row.get(5)?,
+                    result_b_id: row.get(6)?,
+                    model_a_position: row.get(7)?,
+                    human_outcome: row.get(8)?,
+                    human_winner_model_id: row.get(9)?,
+                    human_judged_at: row.get(10)?,
+                })
+            })
+            .map_err(|e| format!("comparison export query error: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("comparison export row error: {e}"))?;
+        (manifest, trials, judge_attempts, comparisons)
+    };
+
+    serde_json::to_string_pretty(&EvaluationBundleExport {
+        version: 2,
+        exported_at_unix_ms: unix_time_ms(),
+        manifest,
+        evidence,
+        trials,
+        results,
+        judge_attempts,
+        comparisons,
+    })
+    .map_err(|e| format!("evaluation bundle serialize error: {e}"))
+}
+
+#[tauri::command]
+pub async fn save_evaluation_bundle(run_id: i64, path: String) -> Result<(), String> {
+    let destination = std::path::PathBuf::from(path);
+    if destination.extension().and_then(|value| value.to_str()) != Some("json") {
+        return Err("Evaluation evidence must be saved as a .json file".into());
+    }
+    let contents = export_evaluation_bundle(run_id).await?;
+    std::fs::write(&destination, contents)
+        .map_err(|e| format!("failed to save evaluation evidence: {e}"))
+}
 
 #[tauri::command]
 pub async fn export_test_suite(suite_id: i64) -> Result<String, String> {
@@ -2056,57 +3234,7 @@ pub async fn export_benchmark_report(run_id: i64) -> Result<String, String> {
         .map_err(|e| format!("run not found (id={run_id}): {e}"))?
     };
 
-    // Query all results with scores
-    let results: Vec<BenchmarkResult> = {
-        let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT br.id, br.run_id, br.prompt_id, br.model_id,
-                        m.display_name, p.title, p.category,
-                        br.output, br.tokens_generated, br.time_to_first_token_ms,
-                        br.total_time_ms, br.tokens_per_second, br.created_at,
-                        (SELECT bs.score FROM benchmark_scores bs
-                         WHERE bs.result_id = br.id AND bs.scoring_method = 'manual'
-                         ORDER BY bs.created_at DESC LIMIT 1),
-                        (SELECT bs.score FROM benchmark_scores bs
-                         WHERE bs.result_id = br.id AND bs.scoring_method = 'auto_judge'
-                         ORDER BY bs.created_at DESC LIMIT 1),
-                        (SELECT bs.notes FROM benchmark_scores bs
-                         WHERE bs.result_id = br.id AND bs.scoring_method = 'auto_judge'
-                         ORDER BY bs.created_at DESC LIMIT 1)
-                 FROM benchmark_results br
-                 JOIN models m ON br.model_id = m.id
-                 JOIN prompts p ON br.prompt_id = p.id
-                 WHERE br.run_id = ?1
-                 ORDER BY p.category, p.sort_order, m.display_name",
-            )
-            .map_err(|e| format!("query error: {e}"))?;
-        let rows: Vec<_> = stmt
-            .query_map(rusqlite::params![run_id], |row| {
-                Ok(BenchmarkResult {
-                    id: row.get(0)?,
-                    run_id: row.get(1)?,
-                    prompt_id: row.get(2)?,
-                    model_id: row.get(3)?,
-                    model_name: row.get(4)?,
-                    prompt_title: row.get(5)?,
-                    prompt_category: row.get(6)?,
-                    output: row.get(7)?,
-                    tokens_generated: row.get(8)?,
-                    time_to_first_token_ms: row.get(9)?,
-                    total_time_ms: row.get(10)?,
-                    tokens_per_second: row.get(11)?,
-                    created_at: row.get(12)?,
-                    manual_score: row.get(13)?,
-                    auto_judge_score: row.get(14)?,
-                    auto_judge_notes: row.get(15)?,
-                })
-            })
-            .map_err(|e| format!("query error: {e}"))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("row error: {e}"))?;
-        rows
-    };
+    let results = get_benchmark_results(run_id).await?;
 
     // Build per-model summary: model_name → (sum_score, count, sum_tps, tps_count)
     let mut model_stats: HashMap<String, (f64, i64, f64, i64)> = HashMap::new();
@@ -2223,6 +3351,13 @@ mod tests {
     }
 
     #[test]
+    fn ollama_unavailable_fails_before_creating_a_run() {
+        let error = require_ollama_available(false).unwrap_err();
+        assert!(error.contains("No evaluation run was created"));
+        assert!(require_ollama_available(true).is_ok());
+    }
+
+    #[test]
     fn benchmark_progress_payload_serializes() {
         let p = BenchmarkProgressPayload {
             run_id: 42,
@@ -2274,6 +3409,10 @@ mod tests {
             manual_score: Some(4),
             auto_judge_score: Some(8),
             auto_judge_notes: Some("Good reasoning".into()),
+            repetition_index: 0,
+            trial_key: Some("eval-1:measured:3:4:0".into()),
+            generation_seed: Some(42),
+            trial_status: "completed".into(),
             created_at: "2026-01-01T00:00:00".into(),
         };
         let json = serde_json::to_string(&r).unwrap();

@@ -2,16 +2,17 @@
 
 [![Rust](https://img.shields.io/badge/rust-%23dea584?style=flat-square&logo=rust)](#) [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](#)
 
-> Your local LLMs, fighting for glory. You decide who wins.
+> Your local LLMs, fighting for glory — with receipts.
 
-Model Colosseum is a local-first macOS desktop app that turns your Ollama models into gladiators. Pick a topic, pick two models, and watch them argue in real time — streaming token by token, side by side. Elo ratings track performance across debates and benchmarks. No cloud, no API keys, no telemetry.
+Model Colosseum is a local-first macOS evaluation lab with a playful arena identity. It helps answer which local model to use for a specific capability on the current hardware, and how uncertain that choice is. Every evaluation records model, prompt, runtime, hardware, trial, judge, failure, and uncertainty provenance. No cloud, no API keys, no telemetry.
 
 ## Features
 
 - **Arena Mode** — freestyle, formal (3-phase), or Socratic debate formats across 3/5/7 rounds with simultaneous streaming
-- **Benchmark Mode** — custom test suites with manual scoring, auto-judge (LLM-scored), blind A/B comparison, TTFT/TPS hardware metrics, and JSON/CSV/Markdown export; ships with a 15-prompt default suite covering coding, creative writing, analysis, summarization, and reasoning
+- **Evaluation Lab** — immutable run manifests, repeated randomized trials, warm-up separation, timeouts/failures, balanced blind A/B positions, per-capability uncertainty, judge disagreement, hardware-aware comparability, and full JSON evidence export
+- **Benchmark Mode** — custom task suites with manual scoring, local auto-judge scoring, blind human comparison, TTFT/TPS hardware metrics, and a 15-prompt default suite
 - **Sparring Ring** — structured 4-phase human vs AI debates (casual / competitive / expert difficulty) with multi-dimension scorecards and user Elo tracking
-- **Elo ratings** — per-model ratings updated after every voted debate outcome
+- **Elo ratings** — playful Arena ratings updated by debate votes; evaluation trials never mutate Elo
 - **Leaderboard** — unified model ranking with per-model Elo history charts
 - **Topic suggestions** — let one of your models brainstorm debate topics
 - **Split-pane viewer** — PRO on the left, CON on the right, both streaming in real time
@@ -24,7 +25,7 @@ Model Colosseum is a local-first macOS desktop app that turns your Ollama models
 ### Prerequisites
 - Rust stable toolchain
 - Node.js 20+ and pnpm
-- [Ollama](https://ollama.com) running locally with at least one model pulled
+- [Ollama](https://ollama.com) running locally with at least two completion-capable models already installed
 
 ### Installation
 ```bash
@@ -60,3 +61,5 @@ pnpm tauri build
 ## License
 
 MIT
+
+See [Evaluation methodology](docs/evaluation-methodology.md) for metric semantics, confidence rules, comparability gates, exports, and migration/rollback guidance.

@@ -13,6 +13,10 @@ function statusBadge(status: string): string {
       return "bg-emerald-500/20 text-emerald-400";
     case "cancelled":
       return "bg-red-500/20 text-red-400";
+    case "failed":
+      return "bg-red-500/20 text-red-400";
+    case "completed_with_failures":
+      return "bg-amber-500/20 text-amber-300";
     case "running":
       return "bg-amber-500/20 text-amber-400";
     default:
@@ -170,17 +174,20 @@ export function RunHistory({ onViewRun, onCompare }: RunHistoryProps) {
                     {run.model_count}
                   </td>
                   <td className="px-4 py-3 text-center text-sm text-slate-300">
-                    {run.prompt_count}
+                    {run.prompt_count} × {run.repetitions}
                   </td>
                   <td className="px-4 py-3 text-center text-xs text-slate-400">
                     {run.scored_count}/{run.total_results}
                   </td>
                   <td className="px-4 py-3 text-center">
-                    <span
-                      className={`rounded px-2 py-0.5 text-xs font-medium ${statusBadge(run.status)}`}
-                    >
-                      {run.status}
-                    </span>
+                    <div className="flex flex-col items-center gap-1">
+                      <span className={`rounded px-2 py-0.5 text-xs font-medium ${statusBadge(run.outcome_status)}`}>
+                        {run.outcome_status}
+                      </span>
+                      <span className={run.comparable ? "text-[10px] text-emerald-400" : "text-[10px] text-amber-400"}>
+                        {run.comparable ? "comparable" : "recommendation withheld"}
+                      </span>
+                    </div>
                   </td>
                 </tr>
               ))}

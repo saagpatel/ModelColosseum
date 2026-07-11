@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
 import { ResponsiveContainer, LineChart, Line, Tooltip } from "recharts";
 import { useAppStore } from "../stores/appStore";
 import { useBenchmarkStore } from "../stores/benchmarkStore";
@@ -10,8 +11,9 @@ import { AutoJudgePanel } from "../components/benchmark/AutoJudgePanel";
 import { RunHistory } from "../components/benchmark/RunHistory";
 import { RunComparison } from "../components/benchmark/RunComparison";
 import { BlindCompare } from "../components/benchmark/BlindCompare";
+import { RunEvidencePanel } from "../components/benchmark/RunEvidencePanel";
 import { downloadBlob } from "../utils/download";
-import type { TestSuite, Prompt, BenchmarkResult } from "../types";
+import type { TestSuite, Prompt, BenchmarkResult, EvaluationConfig } from "../types";
 
 type PromptCategory =
   | "coding"
@@ -386,11 +388,18 @@ function ConfigureModal({
   onStart,
   onCancel,
 }: {
-  onStart: (modelIds: number[]) => void;
+  onStart: (modelIds: number[], config: EvaluationConfig) => void;
   onCancel: () => void;
 }) {
   const { models } = useAppStore();
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [repetitions, setRepetitions] = useState(3);
+  const [warmups, setWarmups] = useState(1);
+  const [timeoutSeconds, setTimeoutSeconds] = useState(120);
+  const [temperature, setTemperature] = useState(0.2);
+  const [numPredict, setNumPredict] = useState(1024);
+  const [think, setThink] = useState(false);
+  const [seed, setSeed] = useState("");
 
   const toggle = (id: number) => {
     setSelected((prev) => {
@@ -404,14 +413,31 @@ function ConfigureModal({
     });
   };
 
+  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (selected.size < 2) return;
+    onStart(Array.from(selected), {
+      repetitions,
+      warmup_repetitions: warmups,
+      timeout_seconds: timeoutSeconds,
+      temperature,
+      num_predict: numPredict,
+      think,
+      seed: seed === "" ? null : Number(seed),
+    });
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
+      <form
+        onSubmit={handleSubmit}
+        className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-slate-700 bg-slate-900 p-6 shadow-2xl"
+      >
         <h2 className="mb-1 text-lg font-bold text-slate-100">
           Select Models to Benchmark
         </h2>
         <p className="mb-5 text-sm text-slate-500">
-          Each model will be run against every prompt in the suite.
+          Repeated, randomized trials produce uncertainty estimates. Warm-ups are recorded but excluded.
         </p>
 
         <div className="mb-5 max-h-64 space-y-1 overflow-y-auto">
@@ -431,28 +457,100 @@ function ConfigureModal({
                 onChange={() => toggle(model.id)}
                 className="h-4 w-4 rounded border-slate-600 accent-gold-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
               />
-              <span className="text-sm text-slate-200">{model.display_name}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm text-slate-200">{model.display_name}</span>
+                <span className="block truncate font-mono text-[10px] text-slate-500">
+                  {model.name} · {model.quantization ?? "quantization unknown"} · {model.digest?.slice(0, 12) ?? "digest unavailable"}
+                </span>
+              </span>
             </label>
           ))}
         </div>
 
+        <fieldset className="mb-5 rounded-xl border border-slate-800 bg-slate-950/40 p-4">
+          <legend className="px-1 text-xs font-bold uppercase tracking-wide text-slate-400">Trial protocol</legend>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <NumberField label="Measured repetitions" value={repetitions} min={1} max={20} onChange={setRepetitions} />
+            <NumberField label="Warm-ups per model" value={warmups} min={0} max={3} onChange={setWarmups} />
+            <NumberField label="Timeout (seconds)" value={timeoutSeconds} min={5} max={3600} onChange={setTimeoutSeconds} />
+            <NumberField label="Temperature" value={temperature} min={0} max={2} step={0.1} onChange={setTemperature} />
+            <NumberField label="Max generated tokens" value={numPredict} min={1} max={32768} onChange={setNumPredict} />
+            <label className="flex items-center gap-2 self-end rounded-lg border border-slate-800 px-3 py-2 text-xs text-slate-400">
+              <input
+                type="checkbox"
+                checked={think}
+                onChange={(event) => setThink(event.target.checked)}
+                className="h-4 w-4 accent-gold-500"
+              />
+              Allow model thinking output
+            </label>
+            <label className="text-xs text-slate-400 sm:col-span-2">
+              Replay seed <span className="text-slate-600">(blank = generated and recorded)</span>
+              <input
+                inputMode="numeric"
+                value={seed}
+                onChange={(event) => setSeed(event.target.value.replace(/\D/g, ""))}
+                placeholder="Auto"
+                className="mt-1 h-9 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 font-mono text-sm text-slate-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
+              />
+            </label>
+          </div>
+          <p className="mt-3 text-xs text-slate-500">
+            {selected.size < 2
+              ? "Select at least two completion models."
+              : `${selected.size} models × ${repetitions} measured repetitions per prompt, plus ${warmups} warm-up${warmups === 1 ? "" : "s"} per model.`}
+          </p>
+        </fieldset>
+
         <div className="flex items-center justify-end gap-2">
           <button
+            type="button"
             onClick={onCancel}
             className="h-10 rounded-lg bg-slate-800 px-4 text-sm font-medium text-slate-300 transition-colors hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
           >
             Cancel
           </button>
           <button
-            onClick={() => onStart(Array.from(selected))}
-            disabled={selected.size === 0}
+            type="submit"
+            disabled={selected.size < 2}
             className="h-10 rounded-lg bg-gold-500 px-5 text-sm font-bold text-slate-950 transition-colors hover:bg-gold-400 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-400"
           >
-            Start Benchmark
+            Start Reproducible Run
           </button>
         </div>
-      </div>
+      </form>
     </div>
+  );
+}
+
+function NumberField({
+  label,
+  value,
+  min,
+  max,
+  step = 1,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="text-xs text-slate-400">
+      {label}
+      <input
+        type="number"
+        value={value}
+        min={min}
+        max={max}
+        step={step}
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="mt-1 h-9 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 font-mono text-sm text-slate-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
+      />
+    </label>
   );
 }
 
@@ -512,7 +610,7 @@ function RunningOverlay({ runId }: { runId: number }) {
         <div className="mb-4 flex items-center justify-between text-xs text-slate-500">
           <span>
             {progress
-              ? `${progress.completed} / ${progress.total} prompts`
+              ? `${progress.completed} / ${progress.total} trials`
               : "Starting..."}
           </span>
           <span>{pct}%</span>
@@ -568,7 +666,10 @@ function RunningOverlay({ runId }: { runId: number }) {
               <LineChart data={hardwareMetrics}>
                 <Tooltip
                   contentStyle={{ background: "#1e293b", border: "1px solid #334155", fontSize: 11 }}
-                  formatter={(value: number, name: string) => [`${value.toFixed(1)}%`, name]}
+                  formatter={(value, name) => [
+                    typeof value === "number" ? `${value.toFixed(1)}%` : "—",
+                    String(name),
+                  ]}
                 />
                 <Line
                   type="monotone"
@@ -629,6 +730,7 @@ export function Benchmark() {
   const [compareRuns, setCompareRuns] = useState<[number, number] | null>(null);
   const [showAutoJudge, setShowAutoJudge] = useState(false);
   const [showBlindCompare, setShowBlindCompare] = useState(false);
+  const [evidenceRevision, setEvidenceRevision] = useState(0);
   const importFileRef = useRef<HTMLInputElement>(null);
 
   useBenchmarkEvents(runId);
@@ -777,12 +879,13 @@ export function Benchmark() {
     }
   };
 
-  const handleStartBenchmark = async (modelIds: number[]) => {
+  const handleStartBenchmark = async (modelIds: number[], config: EvaluationConfig) => {
     if (selectedSuiteId === null) return;
     try {
       const newRunId = await invoke<number>("start_benchmark", {
         suiteId: selectedSuiteId,
         modelIds,
+        config,
       });
       startRun(newRunId);
     } catch (err) {
@@ -828,10 +931,14 @@ export function Benchmark() {
   const handleExportReport = async () => {
     if (viewingRunId === null) return;
     try {
-      const md = await invoke<string>("export_benchmark_report", { runId: viewingRunId });
-      downloadBlob(md, `benchmark-report-${viewingRunId}.md`, "text/markdown");
+      const path = await save({
+        defaultPath: `evaluation-run-${viewingRunId}.json`,
+        filters: [{ name: "Evaluation evidence", extensions: ["json"] }],
+      });
+      if (!path) return;
+      await invoke("save_evaluation_bundle", { runId: viewingRunId, path });
     } catch (err) {
-      console.error("export_benchmark_report error:", err);
+      console.error("export_evaluation_bundle error:", err);
     }
   };
 
@@ -915,7 +1022,10 @@ export function Benchmark() {
         {showBlindCompare && viewingRunId !== null && (
           <BlindCompare
             runId={viewingRunId}
-            onClose={() => setShowBlindCompare(false)}
+            onClose={() => {
+              setShowBlindCompare(false);
+              setEvidenceRevision((revision) => revision + 1);
+            }}
           />
         )}
 
@@ -1000,7 +1110,7 @@ export function Benchmark() {
               onClick={() => void handleExportReport()}
               className="h-8 rounded-lg bg-slate-800 px-3 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
             >
-              Export Report
+              Export Evidence
             </button>
             <button
               onClick={enterScoreAllMode}
@@ -1011,26 +1121,48 @@ export function Benchmark() {
           </div>
         </div>
 
-        {/* Results grid */}
-        <ResultsGrid
-          results={results}
-          blindMode={blindMode}
-          onScoreChange={(id, score) => void handleScoreChange(id, score)}
-        />
+        <div className="min-h-0 flex-1 overflow-auto">
+          {viewingRunId !== null && (
+            <RunEvidencePanel
+              runId={viewingRunId}
+              refreshKey={`${evidenceRevision}:${results.map((result) => `${result.id}:${result.manual_score ?? "-"}:${result.auto_judge_score ?? "-"}`).join("|")}`}
+            />
+          )}
+          <ResultsGrid
+            results={results}
+            blindMode={blindMode}
+            onScoreChange={(id, score) => void handleScoreChange(id, score)}
+          />
+        </div>
       </div>
     );
   }
 
   // ── Phase: error ──
   if (phase === "error") {
+    const errorMessage = useBenchmarkStore.getState().errorMessage;
+    const wasCancelled = errorMessage === "Benchmark cancelled";
+
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4">
-        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-red-500/20 text-4xl text-red-400">
-          ✗
+        <div
+          className={`flex h-16 w-16 items-center justify-center rounded-full text-4xl ${
+            wasCancelled
+              ? "bg-amber-500/20 text-amber-400"
+              : "bg-red-500/20 text-red-400"
+          }`}
+        >
+          {wasCancelled ? "■" : "✗"}
         </div>
-        <h2 className="text-2xl font-bold text-red-400">Benchmark failed</h2>
+        <h2
+          className={`text-2xl font-bold ${wasCancelled ? "text-amber-400" : "text-red-400"}`}
+        >
+          {wasCancelled ? "Benchmark cancelled" : "Benchmark failed"}
+        </h2>
         <p className="max-w-sm text-center text-sm text-slate-500">
-          {useBenchmarkStore.getState().errorMessage ?? "An unknown error occurred."}
+          {wasCancelled
+            ? "Completed work was preserved for audit, and all remaining trials were excluded."
+            : errorMessage ?? "An unknown error occurred."}
         </p>
         <button
           onClick={reset}
@@ -1073,7 +1205,7 @@ export function Benchmark() {
       {/* Configure modal overlay */}
       {phase === "configuring" && (
         <ConfigureModal
-          onStart={(ids) => void handleStartBenchmark(ids)}
+          onStart={(ids, config) => void handleStartBenchmark(ids, config)}
           onCancel={reset}
         />
       )}

@@ -62,66 +62,63 @@ export function ResultsGrid({ results, blindMode, onScoreChange }: ResultsGridPr
       : (modelNames.get(modelId) ?? "Unknown");
   }
 
-  // Group prompts by category
-  const promptOrder: number[] = [];
-  const seenPrompts = new Set<number>();
+  const rowOrder: string[] = [];
+  const seenRows = new Set<string>();
   for (const r of results) {
-    if (!seenPrompts.has(r.prompt_id)) {
-      seenPrompts.add(r.prompt_id);
-      promptOrder.push(r.prompt_id);
+    const key = `${r.prompt_id}:${r.repetition_index}`;
+    if (!seenRows.has(key)) {
+      seenRows.add(key);
+      rowOrder.push(key);
     }
   }
 
-  const promptMeta = new Map<number, { title: string; category: string }>();
+  const promptMeta = new Map<string, { promptId: number; repetition: number; title: string; category: string }>();
   for (const r of results) {
-    if (!promptMeta.has(r.prompt_id)) {
-      promptMeta.set(r.prompt_id, { title: r.prompt_title, category: r.prompt_category });
+    const key = `${r.prompt_id}:${r.repetition_index}`;
+    if (!promptMeta.has(key)) {
+      promptMeta.set(key, {
+        promptId: r.prompt_id,
+        repetition: r.repetition_index,
+        title: r.prompt_title,
+        category: r.prompt_category,
+      });
     }
   }
 
-  // Group prompts by category (maintain order within category)
-  const byCategory = new Map<string, number[]>();
-  for (const pid of promptOrder) {
-    const meta = promptMeta.get(pid);
+  const byCategory = new Map<string, string[]>();
+  for (const rowKey of rowOrder) {
+    const meta = promptMeta.get(rowKey);
     if (!meta) continue;
     const list = byCategory.get(meta.category) ?? [];
-    list.push(pid);
+    list.push(rowKey);
     byCategory.set(meta.category, list);
   }
 
-  // Build lookup: promptId -> modelId -> result
-  const lookup = new Map<number, Map<number, BenchmarkResult>>();
+  const lookup = new Map<string, Map<number, BenchmarkResult>>();
   for (const r of results) {
-    let inner = lookup.get(r.prompt_id);
+    const key = `${r.prompt_id}:${r.repetition_index}`;
+    let inner = lookup.get(key);
     if (!inner) {
       inner = new Map();
-      lookup.set(r.prompt_id, inner);
+      lookup.set(key, inner);
     }
     inner.set(r.model_id, r);
   }
 
-  // Per-prompt fastest TPS
-  const fastestTps = new Map<number, number>();
+  const fastestTps = new Map<string, number>();
   for (const r of results) {
     if (r.tokens_per_second !== null) {
-      const cur = fastestTps.get(r.prompt_id) ?? 0;
-      if (r.tokens_per_second > cur) fastestTps.set(r.prompt_id, r.tokens_per_second);
+      const key = `${r.prompt_id}:${r.repetition_index}`;
+      const cur = fastestTps.get(key) ?? 0;
+      if (r.tokens_per_second > cur) fastestTps.set(key, r.tokens_per_second);
     }
   }
 
-  // Per-model avg score (for column headers)
-  const modelScoreSums = new Map<number, { sum: number; count: number }>();
+  const humanScoreCounts = new Map<number, number>();
   for (const r of results) {
     if (r.manual_score !== null) {
-      const cur = modelScoreSums.get(r.model_id) ?? { sum: 0, count: 0 };
-      modelScoreSums.set(r.model_id, { sum: cur.sum + r.manual_score, count: cur.count + 1 });
+      humanScoreCounts.set(r.model_id, (humanScoreCounts.get(r.model_id) ?? 0) + 1);
     }
-  }
-
-  function avgScore(modelId: number): string {
-    const s = modelScoreSums.get(modelId);
-    if (!s || s.count === 0) return "—";
-    return (s.sum / s.count).toFixed(1);
   }
 
   const blindLabel = openResult
@@ -156,15 +153,14 @@ export function ResultsGrid({ results, blindMode, onScoreChange }: ResultsGridPr
               >
                 <div className="font-semibold">{modelLabel(mid)}</div>
                 <div className="text-[10px] font-normal text-slate-500">
-                  avg {avgScore(mid)}/5
+                  n={humanScoreCounts.get(mid) ?? 0} human-scored trials
                 </div>
               </th>
             ))}
           </tr>
         </thead>
-        <tbody>
-          {[...byCategory.entries()].map(([category, promptIds]) => (
-            <>
+        {[...byCategory.entries()].map(([category, rowKeys]) => (
+            <tbody key={category}>
               {/* Category group header */}
               <tr key={`cat-${category}`} className="border-b border-slate-800 bg-slate-950">
                 <td
@@ -178,12 +174,12 @@ export function ResultsGrid({ results, blindMode, onScoreChange }: ResultsGridPr
                   </span>
                 </td>
               </tr>
-              {promptIds.map((pid) => {
-                const meta = promptMeta.get(pid);
-                const fastest = fastestTps.get(pid);
+              {rowKeys.map((rowKey) => {
+                const meta = promptMeta.get(rowKey);
+                const fastest = fastestTps.get(rowKey);
                 return (
                   <tr
-                    key={pid}
+                    key={rowKey}
                     className="border-b border-slate-800/50 transition-colors hover:bg-slate-800/20"
                   >
                     {/* Prompt title */}
@@ -191,11 +187,14 @@ export function ResultsGrid({ results, blindMode, onScoreChange }: ResultsGridPr
                       <span className="block text-xs font-medium leading-tight text-slate-300">
                         {meta?.title ?? "Unknown"}
                       </span>
+                      <span className="mt-1 block font-mono text-[10px] text-slate-600">
+                        measured trial {(meta?.repetition ?? 0) + 1}
+                      </span>
                     </td>
 
                     {/* One cell per model */}
                     {modelIds.map((mid) => {
-                      const r = lookup.get(pid)?.get(mid);
+                      const r = lookup.get(rowKey)?.get(mid);
                       const isFastest =
                         r?.tokens_per_second !== null &&
                         r?.tokens_per_second !== undefined &&
@@ -231,6 +230,7 @@ export function ResultsGrid({ results, blindMode, onScoreChange }: ResultsGridPr
                                 <span className="font-mono">
                                   {(r.total_time_ms / 1000).toFixed(1)}s
                                 </span>
+                                <span className="font-mono">seed {r.generation_seed ?? "—"}</span>
                               </div>
 
                               {/* Manual score */}
@@ -258,9 +258,8 @@ export function ResultsGrid({ results, blindMode, onScoreChange }: ResultsGridPr
                   </tr>
                 );
               })}
-            </>
-          ))}
-        </tbody>
+            </tbody>
+        ))}
       </table>
     </div>
   );

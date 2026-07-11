@@ -144,7 +144,7 @@ export function Settings() {
         <div className="flex items-center justify-between gap-4">
           <div className="min-w-0 flex-1">
             <span className="block text-sm font-medium text-slate-300">Ollama URL</span>
-            <span className="text-xs text-slate-500">Base URL for the Ollama API</span>
+            <span className="text-xs text-slate-500">Loopback Ollama API only; remote and cloud endpoints are rejected</span>
           </div>
           <div className="flex items-center gap-2">
             <input
@@ -164,6 +164,14 @@ export function Settings() {
               )}
             </button>
           </div>
+        </div>
+
+        <div className="rounded-lg border border-emerald-900/70 bg-emerald-500/5 p-4">
+          <p className="text-sm font-medium text-emerald-300">Local evaluation boundary</p>
+          <p className="mt-1 text-xs leading-relaxed text-slate-400">
+            Reproducible runs record the Ollama server version, exact model tag and digest, prompt suite digest,
+            generation settings, and hardware snapshot. Model downloads and cloud judging are never started here.
+          </p>
         </div>
       </section>
 
@@ -239,6 +247,10 @@ export function Settings() {
             models (first 10 games), <span className="font-mono text-slate-300">K=32</span> standard (10-30 games),
             and <span className="font-mono text-slate-300">K=24</span> for veterans (30+ games). This stabilizes
             ratings over time while allowing new models to adjust quickly.
+          </p>
+          <p className="mt-3 text-xs leading-relaxed text-amber-300/80">
+            Evaluation trials never mutate Arena Elo. Invalid, incomplete, incomparable, automated, or insufficient-sample
+            evidence cannot become a rating update.
           </p>
         </div>
 

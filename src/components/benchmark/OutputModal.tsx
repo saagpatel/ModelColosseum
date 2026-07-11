@@ -110,6 +110,11 @@ export function OutputModal({ result, blindLabel, onClose, onScoreChange }: Outp
               <span className="font-mono text-slate-200">{totalTime}s</span>
             </span>
           </div>
+          <div className="mb-4 flex flex-wrap gap-x-4 gap-y-1 font-mono text-[10px] text-slate-500">
+            <span>measured trial {result.repetition_index + 1}</span>
+            <span>seed {result.generation_seed ?? "unknown"}</span>
+            <span>{result.trial_key ?? "legacy trial"}</span>
+          </div>
 
           {/* Scoring */}
           <div className="flex flex-wrap items-center gap-6">

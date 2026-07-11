@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { RunComparisonEntry } from "../../types";
+import type { RunComparability, RunComparisonEntry } from "../../types";
 
 interface RunComparisonProps {
   runA: number;
@@ -43,14 +43,19 @@ function deltaLabel(delta: number | null): string {
 
 export function RunComparison({ runA, runB, onBack }: RunComparisonProps) {
   const [entries, setEntries] = useState<RunComparisonEntry[]>([]);
+  const [comparability, setComparability] = useState<RunComparability | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const load = async () => {
       try {
-        const data = await invoke<RunComparisonEntry[]>("get_run_comparison", { runA, runB });
+        const [data, comparisonStatus] = await Promise.all([
+          invoke<RunComparisonEntry[]>("get_run_comparison", { runA, runB }),
+          invoke<RunComparability>("get_run_comparability", { runA, runB }),
+        ]);
         setEntries(data);
+        setComparability(comparisonStatus);
       } catch (err) {
         console.error("get_run_comparison error:", err);
         setError(String(err));
@@ -96,6 +101,19 @@ export function RunComparison({ runA, runB, onBack }: RunComparisonProps) {
 
       {!loading && !error && (
         <div className="min-h-0 flex-1 overflow-auto">
+          <div
+            role="status"
+            className={`m-4 rounded-lg border p-4 ${comparability?.comparable ? "border-emerald-800 bg-emerald-500/10" : "border-amber-800 bg-amber-500/10"}`}
+          >
+            <p className={`text-sm font-semibold ${comparability?.comparable ? "text-emerald-300" : "text-amber-200"}`}>
+              {comparability?.comparable ? "Runs are comparable" : "Runs are not comparable — deltas are exploratory only"}
+            </p>
+            {comparability && comparability.reasons.length > 0 && (
+              <ul className="mt-2 space-y-1 text-xs text-amber-300/80">
+                {comparability.reasons.map((reason) => <li key={reason}>• {reason}</li>)}
+              </ul>
+            )}
+          </div>
           <table className="w-full text-sm">
             <thead className="sticky top-0 bg-slate-900/95 backdrop-blur">
               <tr className="border-b border-slate-700">

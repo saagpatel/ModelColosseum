@@ -2472,7 +2472,7 @@ fn compare_manifests(
             .map(|model| (model.exact_tag.clone(), model.digest.clone()))
             .collect::<Vec<_>>()
     };
-    if model_keys(&a) != model_keys(&b) {
+    if model_keys(a) != model_keys(b) {
         reasons.push("Exact model tags or digests differ".into());
         identity_differs = true;
     }

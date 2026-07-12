@@ -2612,6 +2612,7 @@ pub async fn get_run_comparison(run_a: i64, run_b: i64) -> Result<Vec<RunCompari
 pub async fn start_blind_comparison(
     state: tauri::State<'_, ActiveBlindComparisons>,
     run_id: i64,
+    one_per_prompt: Option<bool>,
 ) -> Result<BlindComparison, String> {
     type BlindRow = (
         i64,
@@ -2627,8 +2628,15 @@ pub async fn start_blind_comparison(
         String,
         String,
     );
-    let rows: Vec<BlindRow> = {
+    let (rows, sampling_seed): (Vec<BlindRow>, i64) = {
         let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+        let sampling_seed = conn
+            .query_row(
+                "SELECT COALESCE(random_seed, id) FROM benchmark_runs WHERE id = ?1",
+                rusqlite::params![run_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("run seed query error: {e}"))?;
         let mut stmt = conn
             .prepare(
                 "SELECT bc.id, bc.prompt_id, bc.repetition_index,
@@ -2663,7 +2671,12 @@ pub async fn start_blind_comparison(
             .map_err(|e| format!("query error: {e}"))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("row error: {e}"))?;
-        values
+        (values, sampling_seed)
+    };
+    let rows = if one_per_prompt.unwrap_or(false) {
+        select_one_comparison_per_prompt(rows, sampling_seed, |row| row.1)
+    } else {
+        rows
     };
     let first = rows
         .first()
@@ -2721,6 +2734,37 @@ pub async fn start_blind_comparison(
     }
 
     Ok(BlindComparison { id: run_id, pairs })
+}
+
+fn select_one_comparison_per_prompt<T, F>(rows: Vec<T>, seed: i64, prompt_id_for: F) -> Vec<T>
+where
+    F: Fn(&T) -> i64,
+{
+    let mut selected = Vec::new();
+    let mut current_prompt = None;
+    let mut prompt_rows: Vec<T> = Vec::new();
+
+    let flush = |prompt_rows: &mut Vec<T>, selected: &mut Vec<T>| {
+        if prompt_rows.is_empty() {
+            return;
+        }
+        let prompt_id = prompt_id_for(&prompt_rows[0]);
+        let index = (seed.wrapping_mul(31).wrapping_add(prompt_id) as u64
+            % prompt_rows.len() as u64) as usize;
+        selected.push(prompt_rows.swap_remove(index));
+        prompt_rows.clear();
+    };
+
+    for row in rows {
+        let prompt_id = prompt_id_for(&row);
+        if current_prompt.is_some_and(|current| current != prompt_id) {
+            flush(&mut prompt_rows, &mut selected);
+        }
+        current_prompt = Some(prompt_id);
+        prompt_rows.push(row);
+    }
+    flush(&mut prompt_rows, &mut selected);
+    selected
 }
 
 #[tauri::command]
@@ -3527,6 +3571,37 @@ mod tests {
     }
 
     // ----- Blind comparison score mapping tests -----
+
+    #[test]
+    fn blind_sample_selects_exactly_one_trial_per_prompt_deterministically() {
+        let rows = vec![
+            (10, 1, 0),
+            (11, 1, 1),
+            (12, 1, 2),
+            (20, 2, 0),
+            (21, 2, 1),
+            (22, 2, 2),
+        ];
+
+        let first = select_one_comparison_per_prompt(rows.clone(), 42, |row| row.1);
+        let replay = select_one_comparison_per_prompt(rows, 42, |row| row.1);
+
+        assert_eq!(first, replay);
+        assert_eq!(first.len(), 2);
+        assert_eq!(first.iter().filter(|row| row.1 == 1).count(), 1);
+        assert_eq!(first.iter().filter(|row| row.1 == 2).count(), 1);
+    }
+
+    #[test]
+    fn blind_sample_seed_changes_selected_repetition() {
+        let rows: Vec<_> = (0..5)
+            .map(|repetition| (repetition, 7, repetition))
+            .collect();
+        let first = select_one_comparison_per_prompt(rows.clone(), 1, |row| row.1);
+        let second = select_one_comparison_per_prompt(rows, 2, |row| row.1);
+
+        assert_ne!(first[0].2, second[0].2);
+    }
 
     #[test]
     fn blind_comparison_left_win_maps_to_model_a_when_a_is_left() {

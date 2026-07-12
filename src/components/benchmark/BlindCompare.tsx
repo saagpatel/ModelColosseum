@@ -73,8 +73,8 @@ export function BlindCompare({ runId, onClose }: Props) {
 
       {/* Error */}
       {phase === "error" && (
-        <div className="w-full max-w-md rounded-xl border border-red-800 bg-slate-900 p-6 shadow-2xl">
-          <h2 className="mb-2 text-base font-bold text-red-400">Blind Comparison Failed</h2>
+        <div role="alertdialog" aria-modal="true" aria-labelledby="blind-error-heading" className="w-full max-w-md rounded-xl border border-red-800 bg-slate-900 p-6 shadow-2xl">
+          <h2 id="blind-error-heading" className="mb-2 text-base font-bold text-red-400">Blind Comparison Failed</h2>
           <p className="mb-4 text-sm text-slate-400">{errorMsg ?? "An unknown error occurred."}</p>
           <button
             onClick={onClose}
@@ -87,11 +87,11 @@ export function BlindCompare({ runId, onClose }: Props) {
 
       {/* Judging */}
       {phase === "judging" && currentPair && (
-        <div className="flex h-full w-full flex-col bg-slate-950 p-6">
+        <div role="dialog" aria-modal="true" aria-labelledby="blind-comparison-heading" className="flex h-full w-full flex-col overflow-auto bg-slate-950 p-3 sm:p-6">
           {/* Header */}
-          <div className="mb-4 flex items-center justify-between">
+          <div className="mb-4 flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
             <div>
-              <h2 className="text-base font-bold text-slate-100">
+              <h2 id="blind-comparison-heading" className="text-base font-bold text-slate-100">
                 Blind Comparison — Prompt {pairIndex + 1} of {total}
               </h2>
               <p className="mt-0.5 text-xs text-slate-500">
@@ -102,7 +102,7 @@ export function BlindCompare({ runId, onClose }: Props) {
               </p>
             </div>
             {/* Progress dots */}
-            <div className="flex items-center gap-1">
+            <div className="flex max-w-full flex-wrap items-center gap-1" aria-label={`Comparison ${pairIndex + 1} of ${total}`}>
               {comparison?.pairs.map((_, i) => (
                 <div
                   key={i}
@@ -119,7 +119,7 @@ export function BlindCompare({ runId, onClose }: Props) {
           </div>
 
           {/* Side-by-side panels */}
-          <div className="mb-5 grid min-h-0 flex-1 grid-cols-2 gap-4">
+          <div className="mb-5 grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-2">
             <div className="flex flex-col rounded-xl border border-slate-700 bg-slate-900">
               <div className="border-b border-slate-700 px-4 py-2">
                 <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
@@ -147,7 +147,7 @@ export function BlindCompare({ runId, onClose }: Props) {
           </div>
 
           {/* Pick buttons */}
-          <div className="flex items-center justify-center gap-3">
+          <div className="flex flex-wrap items-center justify-center gap-3">
             <button
               onClick={() => void handlePick("left")}
               className="h-10 rounded-lg bg-emerald-600 px-6 text-sm font-bold text-white transition-colors hover:bg-emerald-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
@@ -172,7 +172,8 @@ export function BlindCompare({ runId, onClose }: Props) {
 
       {/* Reveal */}
       {phase === "reveal" && reveal && (
-        <div className="w-full max-w-2xl rounded-xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
+        <div role="dialog" aria-modal="true" aria-labelledby="blind-reveal-heading" className="mx-3 flex max-h-[calc(100vh-1.5rem)] w-full max-w-2xl flex-col rounded-xl border border-slate-700 bg-slate-900 p-4 shadow-2xl sm:p-6">
+          <h2 id="blind-reveal-heading" className="sr-only">Blind comparison results</h2>
           {/* Summary banner */}
           <div className="mb-5 rounded-lg border border-gold-500/30 bg-gold-500/10 px-4 py-3">
             <p className="text-center text-sm font-semibold text-gold-400">
@@ -198,23 +199,25 @@ export function BlindCompare({ runId, onClose }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {reveal.entries.map((entry) => (
+                {reveal.entries.map((entry, index) => (
                   <tr
-                    key={entry.prompt_id}
+                    key={`${entry.prompt_id}-${index}`}
                     className="border-b border-slate-800/50 hover:bg-slate-800/30"
                   >
                     <td className="px-3 py-2 text-slate-300">{entry.prompt_title}</td>
                     <td className="px-3 py-2 text-center">
                       {entry.winner === "tie" ? (
                         <span className="text-slate-400">Tie</span>
-                      ) : entry.winner === "model_a" ? (
+                      ) : entry.winner === entry.model_a_name ? (
                         <span className="font-medium text-emerald-400">
                           {entry.model_a_name}
                         </span>
-                      ) : (
+                      ) : entry.winner === entry.model_b_name ? (
                         <span className="font-medium text-red-400">
                           {entry.model_b_name}
                         </span>
+                      ) : (
+                        <span className="text-amber-400">Unknown</span>
                       )}
                     </td>
                   </tr>

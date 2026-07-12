@@ -912,6 +912,7 @@ export function Benchmark() {
   const handleImportFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setLoadError(null);
     const reader = new FileReader();
     reader.onload = async (ev) => {
       const jsonData = ev.target?.result as string;
@@ -921,7 +922,11 @@ export function Benchmark() {
         setSuites(result);
       } catch (err) {
         console.error("import_test_suite error:", err);
+        setLoadError(`Suite import failed: ${String(err)}`);
       }
+    };
+    reader.onerror = () => {
+      setLoadError(`Suite import failed: could not read ${file.name}`);
     };
     reader.readAsText(file);
     // Reset so same file can be re-imported
@@ -1231,8 +1236,19 @@ export function Benchmark() {
       </div>
 
       {loadError && (
-        <div className="mx-6 mt-4 rounded-lg bg-red-900/30 px-4 py-3 text-sm text-red-400">
-          {loadError}
+        <div
+          role="alert"
+          className="mx-4 mt-4 flex items-start justify-between gap-3 rounded-lg bg-red-900/30 px-4 py-3 text-sm text-red-400 sm:mx-6"
+        >
+          <span>{loadError}</span>
+          <button
+            type="button"
+            onClick={() => setLoadError(null)}
+            className="shrink-0 rounded px-2 py-1 text-xs font-medium text-red-300 hover:bg-red-900/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-red-400"
+            aria-label="Dismiss import error"
+          >
+            Dismiss
+          </button>
         </div>
       )}
 

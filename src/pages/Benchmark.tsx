@@ -13,7 +13,7 @@ import { RunComparison } from "../components/benchmark/RunComparison";
 import { BlindCompare } from "../components/benchmark/BlindCompare";
 import { RunEvidencePanel } from "../components/benchmark/RunEvidencePanel";
 import { downloadBlob } from "../utils/download";
-import type { TestSuite, Prompt, BenchmarkResult, EvaluationConfig } from "../types";
+import type { TestSuite, Prompt, BenchmarkResult, EvaluationConfig, ReplayReadiness, ReplayPreparation } from "../types";
 
 type PromptCategory =
   | "coding"
@@ -733,6 +733,10 @@ export function Benchmark() {
   const [blindOnePerPrompt, setBlindOnePerPrompt] = useState(false);
   const [evidenceRevision, setEvidenceRevision] = useState(0);
   const importFileRef = useRef<HTMLInputElement>(null);
+  const replayFileRef = useRef<HTMLInputElement>(null);
+  const [replayJson, setReplayJson] = useState<string | null>(null);
+  const [replayReadiness, setReplayReadiness] = useState<ReplayReadiness | null>(null);
+  const [replayBusy, setReplayBusy] = useState(false);
 
   useBenchmarkEvents(runId);
 
@@ -932,6 +936,48 @@ export function Benchmark() {
     reader.readAsText(file);
     // Reset so same file can be re-imported
     e.target.value = "";
+  };
+
+  const handleReplayFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setLoadError(null);
+    setReplayBusy(true);
+    try {
+      const jsonData = await file.text();
+      const readiness = await invoke<ReplayReadiness>("inspect_replay_bundle", { jsonData });
+      setReplayJson(jsonData);
+      setReplayReadiness(readiness);
+    } catch (err) {
+      setLoadError(`Replay inspection failed: ${String(err)}`);
+      setReplayJson(null);
+      setReplayReadiness(null);
+    } finally {
+      setReplayBusy(false);
+      e.target.value = "";
+    }
+  };
+
+  const handlePrepareReplay = async () => {
+    if (!replayJson || !replayReadiness?.ready) return;
+    setReplayBusy(true);
+    try {
+      const prepared = await invoke<ReplayPreparation>("prepare_replay_bundle", { jsonData: replayJson });
+      const newRunId = await invoke<number>("start_benchmark", {
+        suiteId: prepared.suite_id,
+        modelIds: prepared.model_ids,
+        config: prepared.config,
+        replaySourceManifestDigest: prepared.source_manifest_digest,
+        replaySourceRunKey: prepared.source_run_key,
+      });
+      setReplayJson(null);
+      setReplayReadiness(null);
+      startRun(newRunId);
+    } catch (err) {
+      setLoadError(`Replay start failed: ${String(err)}`);
+    } finally {
+      setReplayBusy(false);
+    }
   };
 
   const handleExportReport = async () => {
@@ -1238,6 +1284,29 @@ export function Benchmark() {
 
   return (
     <div className="flex h-full flex-col bg-slate-950">
+      {replayReadiness && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 p-4 backdrop-blur-sm">
+          <section aria-labelledby="replay-readiness-title" className="max-h-[90vh] w-full max-w-2xl overflow-auto rounded-xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
+            <h2 id="replay-readiness-title" className="text-xl font-bold text-slate-100">Replay readiness</h2>
+            <p className="mt-1 text-sm text-slate-400">{replayReadiness.classification.replaceAll("_", " ")} · source {replayReadiness.source_manifest_digest.slice(0, 12)}</p>
+            <div className="mt-4 grid gap-2 sm:grid-cols-3">
+              <div className="rounded-lg bg-slate-950 p-3 text-xs text-slate-300">Ollama<br/><strong>{replayReadiness.ollama_available ? (replayReadiness.ollama_version_matches ? "version matched" : "version differs") : "unavailable"}</strong></div>
+              <div className="rounded-lg bg-slate-950 p-3 text-xs text-slate-300">Hardware<br/><strong>{replayReadiness.hardware_matches ? "matched" : "variant"}</strong></div>
+              <div className="rounded-lg bg-slate-950 p-3 text-xs text-slate-300">Source run<br/><strong>{replayReadiness.source_run_valid ? "valid" : "invalid"}</strong></div>
+            </div>
+            <ul className="mt-4 space-y-2" aria-label="Required model readiness">
+              {replayReadiness.models.map((model) => <li key={model.exact_tag} className="flex justify-between rounded-lg border border-slate-800 px-3 py-2 text-sm"><span className="text-slate-200">{model.exact_tag}</span><span className={model.status === "matched" ? "text-emerald-400" : "text-red-400"}>{model.status.replaceAll("_", " ")}</span></li>)}
+            </ul>
+            {replayReadiness.blockers.length > 0 && <div role="alert" className="mt-4 rounded-lg bg-red-950/50 p-3 text-sm text-red-300">{replayReadiness.blockers.join(" · ")}</div>}
+            {replayReadiness.warnings.length > 0 && <div className="mt-4 rounded-lg bg-amber-950/40 p-3 text-sm text-amber-200">{replayReadiness.warnings.join(" · ")}</div>}
+            <p className="mt-4 text-xs text-slate-500">ModelColosseum will not download missing models. Preparing creates a local suite snapshot and links the new run to this source manifest.</p>
+            <div className="mt-6 flex justify-end gap-3">
+              <button type="button" onClick={() => { setReplayReadiness(null); setReplayJson(null); }} className="rounded-lg bg-slate-800 px-4 py-2 text-sm text-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400">Cancel</button>
+              <button type="button" disabled={!replayReadiness.ready || replayBusy} onClick={() => void handlePrepareReplay()} className="rounded-lg bg-gold-500 px-4 py-2 text-sm font-bold text-slate-950 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-300">{replayBusy ? "Preparing…" : "Prepare & Run"}</button>
+            </div>
+          </section>
+        </div>
+      )}
       {/* Configure modal overlay */}
       {phase === "configuring" && (
         <ConfigureModal
@@ -1255,6 +1324,14 @@ export function Benchmark() {
             className="h-9 rounded-lg bg-slate-800 px-4 text-sm font-medium text-slate-300 transition-colors hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
           >
             Past Runs
+          </button>
+          <button
+            type="button"
+            onClick={() => replayFileRef.current?.click()}
+            disabled={replayBusy}
+            className="h-9 rounded-lg border border-slate-700 px-4 text-sm font-medium text-slate-300 transition-colors hover:border-gold-500 hover:text-gold-300 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-400"
+          >
+            Import Replay
           </button>
           <button
             onClick={startConfiguring}
@@ -1292,6 +1369,14 @@ export function Benchmark() {
           accept=".json"
           className="hidden"
           onChange={(e) => void handleImportFileChange(e)}
+        />
+        <input
+          ref={replayFileRef}
+          type="file"
+          accept="application/json,.json"
+          onChange={(event) => void handleReplayFileChange(event)}
+          className="hidden"
+          aria-label="Import evaluation evidence for replay"
         />
 
         {/* Sidebar */}

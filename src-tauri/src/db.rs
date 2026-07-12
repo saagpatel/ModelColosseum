@@ -111,6 +111,13 @@ pub(crate) fn apply_migrations(conn: &Connection) -> SqlResult<()> {
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         add_column_if_missing(conn, "benchmark_runs", "comparability_notes", "TEXT")?;
+        add_column_if_missing(
+            conn,
+            "benchmark_runs",
+            "replay_source_manifest_digest",
+            "TEXT",
+        )?;
+        add_column_if_missing(conn, "benchmark_runs", "replay_source_run_key", "TEXT")?;
 
         add_column_if_missing(conn, "benchmark_results", "trial_id", "INTEGER")?;
         add_column_if_missing(
@@ -219,7 +226,8 @@ pub(crate) fn apply_migrations(conn: &Connection) -> SqlResult<()> {
                 ON benchmark_judge_attempts(run_id, status, result_id);
 
             INSERT OR IGNORE INTO schema_migrations (version) VALUES (2);
-            INSERT OR IGNORE INTO schema_migrations (version) VALUES (3);",
+            INSERT OR IGNORE INTO schema_migrations (version) VALUES (3);
+            INSERT OR IGNORE INTO schema_migrations (version) VALUES (4);",
         )?;
         Ok(())
     })();
@@ -757,6 +765,8 @@ mod tests {
         assert_eq!(outcome, "legacy");
         assert!(has_column(&conn, "models", "digest").unwrap());
         assert!(has_column(&conn, "benchmark_runs", "manifest_digest").unwrap());
+        assert!(has_column(&conn, "benchmark_runs", "replay_source_manifest_digest").unwrap());
+        assert!(has_column(&conn, "benchmark_runs", "replay_source_run_key").unwrap());
     }
 
     #[test]

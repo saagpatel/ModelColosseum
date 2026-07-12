@@ -707,6 +707,8 @@ pub fn run() {
             benchmark::get_benchmark_metrics,
             benchmark::export_evaluation_bundle,
             benchmark::save_evaluation_bundle,
+            benchmark::inspect_replay_bundle,
+            benchmark::prepare_replay_bundle,
             benchmark::export_test_suite,
             benchmark::import_test_suite,
             benchmark::export_leaderboard,

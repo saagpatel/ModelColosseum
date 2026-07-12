@@ -247,6 +247,34 @@ export interface RunComparability {
   reasons: string[];
 }
 
+export interface ReplayReadiness {
+  ready: boolean;
+  source_manifest_digest: string;
+  source_run_key: string;
+  classification: "exact_reproduction" | "hardware_variant" | "runtime_variant" | "blocked";
+  ollama_available: boolean;
+  ollama_version_matches: boolean;
+  hardware_matches: boolean;
+  source_run_valid: boolean;
+  models: Array<{
+    exact_tag: string;
+    expected_digest: string | null;
+    installed_digest: string | null;
+    status: "matched" | "missing" | "digest_mismatch";
+  }>;
+  blockers: string[];
+  warnings: string[];
+}
+
+export interface ReplayPreparation {
+  suite_id: number;
+  model_ids: number[];
+  config: EvaluationConfig;
+  source_manifest_digest: string;
+  source_run_key: string;
+  readiness: ReplayReadiness;
+}
+
 export interface BenchmarkLeaderboardEntry {
   model_id: number;
   model_name: string;

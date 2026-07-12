@@ -58,6 +58,8 @@ Cross-run comparison classifies the relationship instead of collapsing every mis
 
 The comparison screen exports a reproduction receipt containing both complete manifests, their stored digests, the classification, and every mismatch reason. The receipt explains the comparison without modifying either immutable run.
 
+An exported evaluation bundle can also be inspected for replay. Inspection is read-only and verifies the bundle's manifest digest, source-run validity, supported schema, local Ollama availability/version, exact installed model tags/digests, and current hardware snapshot. Missing or digest-mismatched models block replay and never trigger a download. After explicit operator confirmation, the app creates a local suite snapshot and starts a normal immutable run with the source manifest digest and run key recorded as replay provenance. A different Ollama version is labeled runtime-variant; different hardware is labeled hardware-variant.
+
 The classification considers:
 
 - suite/prompt digest;

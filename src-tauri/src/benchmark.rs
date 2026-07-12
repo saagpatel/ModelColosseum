@@ -371,6 +371,53 @@ struct EvaluationBundleExport {
     results: Vec<BenchmarkResult>,
     judge_attempts: Vec<JudgeAttemptExportData>,
     comparisons: Vec<ComparisonExportData>,
+    replay_source: Option<ReplaySourceExport>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReplaySourceExport {
+    manifest_digest: String,
+    run_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReplayBundleImport {
+    version: u32,
+    manifest: RunManifest,
+    evidence: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct ReplayModelReadiness {
+    pub exact_tag: String,
+    pub expected_digest: Option<String>,
+    pub installed_digest: Option<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct ReplayReadiness {
+    pub ready: bool,
+    pub source_manifest_digest: String,
+    pub source_run_key: String,
+    pub classification: String,
+    pub ollama_available: bool,
+    pub ollama_version_matches: bool,
+    pub hardware_matches: bool,
+    pub source_run_valid: bool,
+    pub models: Vec<ReplayModelReadiness>,
+    pub blockers: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReplayPreparation {
+    pub suite_id: i64,
+    pub model_ids: Vec<i64>,
+    pub config: EvaluationConfig,
+    pub source_manifest_digest: String,
+    pub source_run_key: String,
+    pub readiness: ReplayReadiness,
 }
 
 // ---------------------------------------------------------------------------
@@ -910,6 +957,8 @@ pub async fn start_benchmark(
     suite_id: i64,
     model_ids: Vec<i64>,
     config: Option<EvaluationConfig>,
+    replay_source_manifest_digest: Option<String>,
+    replay_source_run_key: Option<String>,
 ) -> Result<i64, String> {
     let config = config.unwrap_or_default();
     config.validate()?;
@@ -1078,8 +1127,9 @@ pub async fn start_benchmark(
         tx.execute(
             "INSERT INTO benchmark_runs
                 (suite_id, status, repetitions, warmup_repetitions, random_seed,
-                 timeout_seconds, generation_settings_json, outcome_status)
-             VALUES (?1, 'running', ?2, ?3, ?4, ?5, ?6, 'running')",
+                 timeout_seconds, generation_settings_json, outcome_status,
+                 replay_source_manifest_digest, replay_source_run_key)
+             VALUES (?1, 'running', ?2, ?3, ?4, ?5, ?6, 'running', ?7, ?8)",
             rusqlite::params![
                 suite_id,
                 config.repetitions,
@@ -1087,6 +1137,8 @@ pub async fn start_benchmark(
                 random_seed as i64,
                 config.timeout_seconds as i64,
                 generation_settings_json,
+                replay_source_manifest_digest,
+                replay_source_run_key,
             ],
         )
         .map_err(|e| format!("insert run error: {e}"))?;
@@ -3079,11 +3131,213 @@ pub async fn get_benchmark_metrics(
 // Import/export commands
 // ---------------------------------------------------------------------------
 
+fn parse_replay_bundle(json_data: &str) -> Result<(ReplayBundleImport, String), String> {
+    let bundle: ReplayBundleImport = serde_json::from_str(json_data)
+        .map_err(|e| format!("invalid evaluation evidence bundle: {e}"))?;
+    if bundle.version != 2 {
+        return Err(format!(
+            "unsupported evaluation bundle version {} (expected 2)",
+            bundle.version
+        ));
+    }
+    if bundle.manifest.schema_version != evaluation::MANIFEST_SCHEMA_VERSION {
+        return Err(format!(
+            "unsupported manifest schema {} (expected {})",
+            bundle.manifest.schema_version,
+            evaluation::MANIFEST_SCHEMA_VERSION
+        ));
+    }
+    let manifest_json = serde_json::to_string_pretty(&bundle.manifest)
+        .map_err(|e| format!("manifest serialization failed: {e}"))?;
+    let calculated_digest = evaluation::sha256_hex(manifest_json.as_bytes());
+    let stored_digest = bundle
+        .evidence
+        .get("manifest_digest")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "bundle evidence is missing its manifest digest".to_string())?;
+    if calculated_digest != stored_digest {
+        return Err("bundle manifest digest does not match its contents; replay refused".into());
+    }
+    Ok((bundle, calculated_digest))
+}
+
+#[tauri::command]
+pub async fn inspect_replay_bundle(json_data: String) -> Result<ReplayReadiness, String> {
+    let (bundle, source_manifest_digest) = parse_replay_bundle(&json_data)?;
+    let source_run_valid = bundle
+        .evidence
+        .get("comparable")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let mut blockers = Vec::new();
+    let mut warnings = Vec::new();
+    if !source_run_valid {
+        blockers.push("Source run is invalid, incomplete, or incomparable".into());
+    }
+    if bundle.manifest.models.len() < 2 {
+        blockers.push("Replay manifest must contain at least two models".into());
+    }
+    if bundle.manifest.suite.prompts.is_empty() {
+        blockers.push("Replay manifest contains no prompts".into());
+    }
+
+    let ollama_available = require_ollama_available(ollama::health_check().await?).is_ok();
+    let (current_version, installed_models) = if ollama_available {
+        (
+            Some(ollama::get_version().await?),
+            ollama::list_models().await?,
+        )
+    } else {
+        blockers.push("Local Ollama is unavailable; no replay can be started".into());
+        (None, Vec::new())
+    };
+    let ollama_version_matches = current_version
+        .as_deref()
+        .map(|version| version == bundle.manifest.ollama.server_version)
+        .unwrap_or(false);
+    if ollama_available && !ollama_version_matches {
+        warnings.push(format!(
+            "Ollama version differs: source {}, local {}",
+            bundle.manifest.ollama.server_version,
+            current_version.as_deref().unwrap_or("unknown")
+        ));
+    }
+
+    let models = bundle
+        .manifest
+        .models
+        .iter()
+        .map(|expected| {
+            let installed = installed_models
+                .iter()
+                .find(|candidate| candidate.name == expected.exact_tag);
+            let status = match installed {
+                None => {
+                    blockers.push(format!(
+                        "Required model '{}' is not installed; automatic downloads are disabled",
+                        expected.exact_tag
+                    ));
+                    "missing"
+                }
+                Some(local) if expected.digest.is_some() && local.digest != expected.digest => {
+                    blockers.push(format!(
+                        "Model '{}' digest differs from the source manifest",
+                        expected.exact_tag
+                    ));
+                    "digest_mismatch"
+                }
+                Some(_) => "matched",
+            };
+            ReplayModelReadiness {
+                exact_tag: expected.exact_tag.clone(),
+                expected_digest: expected.digest.clone(),
+                installed_digest: installed.and_then(|model| model.digest.clone()),
+                status: status.into(),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let hardware_matches =
+        digest_json(&capture_hardware_snapshot())? == digest_json(&bundle.manifest.hardware)?;
+    let classification = if !blockers.is_empty() {
+        "blocked"
+    } else if !ollama_version_matches {
+        "runtime_variant"
+    } else if !hardware_matches {
+        "hardware_variant"
+    } else {
+        "exact_reproduction"
+    };
+    Ok(ReplayReadiness {
+        ready: blockers.is_empty(),
+        source_manifest_digest,
+        source_run_key: bundle.manifest.run_key,
+        classification: classification.into(),
+        ollama_available,
+        ollama_version_matches,
+        hardware_matches,
+        source_run_valid,
+        models,
+        blockers,
+        warnings,
+    })
+}
+
+#[tauri::command]
+pub async fn prepare_replay_bundle(json_data: String) -> Result<ReplayPreparation, String> {
+    let readiness = inspect_replay_bundle(json_data.clone()).await?;
+    if !readiness.ready {
+        return Err(format!(
+            "replay is blocked: {}",
+            readiness.blockers.join("; ")
+        ));
+    }
+    let (bundle, _) = parse_replay_bundle(&json_data)?;
+    let mut conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("begin replay preparation: {e}"))?;
+    tx.execute(
+        "INSERT INTO test_suites (name, description) VALUES (?1, ?2)",
+        rusqlite::params![
+            bundle.manifest.suite.name,
+            bundle.manifest.suite.description
+        ],
+    )
+    .map_err(|e| format!("insert replay suite: {e}"))?;
+    let suite_id = tx.last_insert_rowid();
+    for prompt in &bundle.manifest.suite.prompts {
+        tx.execute(
+            "INSERT INTO prompts
+                (suite_id, category, title, text, system_prompt, ideal_answer,
+                 eval_criteria, sort_order)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                suite_id,
+                prompt.category,
+                prompt.title,
+                prompt.text,
+                prompt.system_prompt,
+                prompt.ideal_answer,
+                prompt.eval_criteria,
+                prompt.sort_order,
+            ],
+        )
+        .map_err(|e| format!("insert replay prompt: {e}"))?;
+    }
+    let mut model_ids = Vec::new();
+    for model in &bundle.manifest.models {
+        tx.execute(
+            "INSERT OR IGNORE INTO models (name, display_name) VALUES (?1, ?1)",
+            [&model.exact_tag],
+        )
+        .map_err(|e| format!("register replay model: {e}"))?;
+        let model_id = tx
+            .query_row(
+                "SELECT id FROM models WHERE name = ?1",
+                [&model.exact_tag],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("resolve replay model: {e}"))?;
+        model_ids.push(model_id);
+    }
+    tx.commit()
+        .map_err(|e| format!("commit replay preparation: {e}"))?;
+    Ok(ReplayPreparation {
+        suite_id,
+        model_ids,
+        config: bundle.manifest.generation,
+        source_manifest_digest: readiness.source_manifest_digest.clone(),
+        source_run_key: readiness.source_run_key.clone(),
+        readiness,
+    })
+}
+
 #[tauri::command]
 pub async fn export_evaluation_bundle(run_id: i64) -> Result<String, String> {
     let evidence = get_run_evidence(run_id).await?;
     let results = get_benchmark_results(run_id).await?;
-    let (manifest, trials, judge_attempts, comparisons) = {
+    let (manifest, trials, judge_attempts, comparisons, replay_source) = {
         let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
         let manifest_json: String = conn
             .query_row(
@@ -3178,7 +3432,24 @@ pub async fn export_evaluation_bundle(run_id: i64) -> Result<String, String> {
             .map_err(|e| format!("comparison export query error: {e}"))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("comparison export row error: {e}"))?;
-        (manifest, trials, judge_attempts, comparisons)
+        let (source_digest, source_run_key) = conn
+            .query_row(
+                "SELECT replay_source_manifest_digest, replay_source_run_key
+                 FROM benchmark_runs WHERE id = ?1",
+                [run_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
+            )
+            .map_err(|e| format!("replay provenance query error: {e}"))?;
+        let replay_source = source_digest.map(|manifest_digest| ReplaySourceExport {
+            manifest_digest,
+            run_key: source_run_key,
+        });
+        (manifest, trials, judge_attempts, comparisons, replay_source)
     };
 
     serde_json::to_string_pretty(&EvaluationBundleExport {
@@ -3190,6 +3461,7 @@ pub async fn export_evaluation_bundle(run_id: i64) -> Result<String, String> {
         results,
         judge_attempts,
         comparisons,
+        replay_source,
     })
     .map_err(|e| format!("evaluation bundle serialize error: {e}"))
 }
@@ -3940,6 +4212,41 @@ mod tests {
         assert_eq!(result.classification, "incomparable");
         assert!(!result.quality_comparable);
         assert!(!result.performance_comparable);
+    }
+
+    fn replay_bundle_json(manifest: &RunManifest, version: u32) -> String {
+        let manifest_json = serde_json::to_string_pretty(manifest).unwrap();
+        let digest = evaluation::sha256_hex(manifest_json.as_bytes());
+        serde_json::to_string(&serde_json::json!({
+            "version": version,
+            "manifest": manifest,
+            "evidence": { "manifest_digest": digest, "comparable": true }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn replay_bundle_integrity_accepts_untampered_manifest() {
+        let manifest = comparison_manifest();
+        let json = replay_bundle_json(&manifest, 2);
+        let (parsed, digest) = parse_replay_bundle(&json).unwrap();
+        assert_eq!(parsed.manifest.run_key, manifest.run_key);
+        assert_eq!(digest.len(), 64);
+    }
+
+    #[test]
+    fn replay_bundle_integrity_rejects_tampered_manifest() {
+        let manifest = comparison_manifest();
+        let json = replay_bundle_json(&manifest, 2).replace("model:tag", "other:tag");
+        let error = parse_replay_bundle(&json).unwrap_err();
+        assert!(error.contains("digest does not match"));
+    }
+
+    #[test]
+    fn replay_bundle_rejects_unsupported_export_version() {
+        let error =
+            parse_replay_bundle(&replay_bundle_json(&comparison_manifest(), 99)).unwrap_err();
+        assert!(error.contains("unsupported evaluation bundle version"));
     }
 
     // ----- SuiteExport JSON round-trip test -----

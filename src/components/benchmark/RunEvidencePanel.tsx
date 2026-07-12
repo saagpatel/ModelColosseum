@@ -86,7 +86,7 @@ export function RunEvidencePanel({ runId, refreshKey = "" }: RunEvidencePanelPro
         <Metric label="Judge sources" value={String(evidence.judge_provenance.length)} />
         <Metric label="Human vote pairs" value={String(evidence.position_bias.sample_size)} />
         <Metric
-          label="Judge disagreement"
+          label="Human / latest judge"
           value={
             evidence.judge_disagreement.disagreement_rate === null
               ? "unknown"

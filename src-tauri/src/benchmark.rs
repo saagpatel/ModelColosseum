@@ -1742,6 +1742,7 @@ pub async fn auto_judge_benchmark(
                        SELECT 1 FROM benchmark_scores bs
                        WHERE bs.result_id = br.id
                          AND bs.scoring_method = 'auto_judge'
+                         AND bs.judge_model_id = ?2
                    )
                  ORDER BY br.id",
             )
@@ -1987,6 +1988,64 @@ pub async fn cancel_auto_judge(
     Ok(())
 }
 
+fn recommendation_for_scored_pair(
+    category: String,
+    mut selected: Vec<&CapabilityEvidence>,
+) -> CapabilityRecommendation {
+    selected.sort_by(|a, b| {
+        b.confidence
+            .mean
+            .partial_cmp(&a.confidence.mean)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    if selected.len() < 2 {
+        return CapabilityRecommendation {
+            category,
+            recommended_model: None,
+            confidence: "insufficient evidence".into(),
+            reason: "At least two models need scores from the same judge method".into(),
+        };
+    }
+    if !selected[0].confidence.sufficient_sample || !selected[1].confidence.sufficient_sample {
+        return CapabilityRecommendation {
+            category,
+            recommended_model: None,
+            confidence: "insufficient sample".into(),
+            reason: format!(
+                "{} and {} do not both meet the repeated-sample threshold",
+                selected[0].model_name, selected[1].model_name
+            ),
+        };
+    }
+    let top = selected[0];
+    let runner_up = selected[1];
+    let separated = match (top.confidence.lower_95, runner_up.confidence.upper_95) {
+        (Some(top_low), Some(other_high)) => top_low > other_high,
+        _ => false,
+    };
+    if separated {
+        CapabilityRecommendation {
+            category,
+            recommended_model: Some(top.model_name.clone()),
+            confidence: "directional".into(),
+            reason: format!(
+                "{} leads {} using {} and the approximate 95% intervals do not overlap",
+                top.model_name, runner_up.model_name, top.scoring_method
+            ),
+        }
+    } else {
+        CapabilityRecommendation {
+            category,
+            recommended_model: None,
+            confidence: "inconclusive".into(),
+            reason: format!(
+                "{} and {} have overlapping uncertainty intervals",
+                top.model_name, runner_up.model_name
+            ),
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn get_run_evidence(run_id: i64) -> Result<RunEvidence, String> {
     let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
@@ -2028,22 +2087,23 @@ pub async fn get_run_evidence(run_id: i64) -> Result<RunEvidence, String> {
         )
         .map_err(|e| format!("trial count error: {e}"))?;
 
-    type ScoreRow = (String, i64, String, Option<f64>, Option<f64>);
+    type ScoreRow = (String, i64, String, String, f64);
     let mut score_stmt = conn
         .prepare(
             "SELECT p.category, br.model_id, m.display_name,
-                    (SELECT CAST(bs.score AS REAL) FROM benchmark_scores bs
-                     WHERE bs.result_id = br.id AND bs.scoring_method = 'auto_judge'
-                       AND bs.status = 'completed'
-                     ORDER BY bs.created_at DESC LIMIT 1),
-                    (SELECT CAST(bs.score AS REAL) * 2.0 FROM benchmark_scores bs
-                     WHERE bs.result_id = br.id AND bs.scoring_method = 'manual'
-                       AND bs.status = 'completed'
-                     ORDER BY bs.created_at DESC LIMIT 1)
+                    CASE bs.scoring_method
+                        WHEN 'auto_judge' THEN 'auto_judge:' || jm.name
+                        ELSE 'human_score'
+                    END,
+                    CASE bs.scoring_method WHEN 'manual' THEN CAST(bs.score AS REAL) * 2.0
+                        ELSE CAST(bs.score AS REAL) END
              FROM benchmark_results br
              JOIN benchmark_trials bt ON bt.id = br.trial_id
              JOIN prompts p ON p.id = br.prompt_id
              JOIN models m ON m.id = br.model_id
+             JOIN benchmark_scores bs ON bs.result_id = br.id AND bs.status = 'completed'
+                 AND bs.scoring_method IN ('auto_judge', 'manual')
+             LEFT JOIN models jm ON jm.id = bs.judge_model_id
              WHERE br.run_id = ?1 AND bt.trial_kind = 'measured' AND bt.status = 'completed'",
         )
         .map_err(|e| format!("evidence query error: {e}"))?;
@@ -2062,24 +2122,11 @@ pub async fn get_run_evidence(run_id: i64) -> Result<RunEvidence, String> {
         .map_err(|e| format!("evidence row error: {e}"))?;
 
     let mut grouped: HashMap<(String, i64, String, String), Vec<f64>> = HashMap::new();
-    for (category, model_id, model_name, auto_score, manual_score) in score_rows {
-        if let Some(score) = auto_score {
-            grouped
-                .entry((
-                    category.clone(),
-                    model_id,
-                    model_name.clone(),
-                    "auto_judge".into(),
-                ))
-                .or_default()
-                .push(score);
-        }
-        if let Some(score) = manual_score {
-            grouped
-                .entry((category, model_id, model_name, "human_score".into()))
-                .or_default()
-                .push(score);
-        }
+    for (category, model_id, model_name, scoring_method, score) in score_rows {
+        grouped
+            .entry((category, model_id, model_name, scoring_method))
+            .or_default()
+            .push(score);
     }
     let mut capability_evidence: Vec<CapabilityEvidence> = grouped
         .into_iter()
@@ -2114,12 +2161,7 @@ pub async fn get_run_evidence(run_id: i64) -> Result<RunEvidence, String> {
             .copied()
             .filter(|entry| entry.scoring_method == "human_score")
             .collect();
-        let auto: Vec<_> = all_evidence
-            .iter()
-            .copied()
-            .filter(|entry| entry.scoring_method == "auto_judge")
-            .collect();
-        let mut selected = if human.len() >= 2 { human } else { auto };
+        let mut selected = human;
         selected.sort_by(|a, b| {
             b.confidence
                 .mean
@@ -2133,40 +2175,55 @@ pub async fn get_run_evidence(run_id: i64) -> Result<RunEvidence, String> {
                 confidence: "withheld".into(),
                 reason: "Run is incomplete or incomparable; no recommendation is allowed".into(),
             }
-        } else if selected.len() < 2 {
-            CapabilityRecommendation {
-                category,
-                recommended_model: None,
-                confidence: "insufficient evidence".into(),
-                reason: "At least two models need scores from the same judge method".into(),
-            }
-        } else if !selected[0].confidence.sufficient_sample
-            || !selected[1].confidence.sufficient_sample
-        {
-            CapabilityRecommendation {
-                category,
-                recommended_model: None,
-                confidence: "insufficient sample".into(),
-                reason: format!(
-                    "{} and {} do not both meet the repeated-sample threshold",
-                    selected[0].model_name, selected[1].model_name
-                ),
-            }
+        } else if selected.len() >= 2 {
+            recommendation_for_scored_pair(category, selected)
         } else {
-            let top = selected[0];
-            let runner_up = selected[1];
-            let separated = match (top.confidence.lower_95, runner_up.confidence.upper_95) {
-                (Some(top_low), Some(other_high)) => top_low > other_high,
-                _ => false,
-            };
-            if separated {
+            let mut by_judge: HashMap<&str, Vec<&CapabilityEvidence>> = HashMap::new();
+            for entry in all_evidence
+                .iter()
+                .copied()
+                .filter(|entry| entry.scoring_method.starts_with("auto_judge:"))
+            {
+                by_judge
+                    .entry(entry.scoring_method.as_str())
+                    .or_default()
+                    .push(entry);
+            }
+            let judge_count = by_judge.len();
+            let mut judge_winners = Vec::new();
+            for entries in by_judge.into_values() {
+                let candidate = recommendation_for_scored_pair(category.clone(), entries);
+                judge_winners.push(candidate.recommended_model);
+            }
+            let consensus = judge_winners.first().cloned().flatten();
+            let unanimous = consensus.is_some()
+                && judge_winners
+                    .iter()
+                    .all(|winner| winner.as_ref() == consensus.as_ref());
+            if judge_count == 0 {
                 CapabilityRecommendation {
                     category,
-                    recommended_model: Some(top.model_name.clone()),
+                    recommended_model: None,
+                    confidence: "insufficient evidence".into(),
+                    reason: "At least two models need scores from the same judge method".into(),
+                }
+            } else if unanimous {
+                CapabilityRecommendation {
+                    category,
+                    recommended_model: consensus.clone(),
                     confidence: "directional".into(),
                     reason: format!(
-                        "{} leads {} using {} and the approximate 95% intervals do not overlap",
-                        top.model_name, runner_up.model_name, top.scoring_method
+                        "All {judge_count} local auto-judge(s) independently support {}",
+                        consensus.unwrap_or_default()
+                    ),
+                }
+            } else if judge_count > 1 {
+                CapabilityRecommendation {
+                    category,
+                    recommended_model: None,
+                    confidence: "judge-sensitive".into(),
+                    reason: format!(
+                        "The {judge_count} local auto-judges do not independently support the same winner"
                     ),
                 }
             } else {
@@ -2174,10 +2231,7 @@ pub async fn get_run_evidence(run_id: i64) -> Result<RunEvidence, String> {
                     category,
                     recommended_model: None,
                     confidence: "inconclusive".into(),
-                    reason: format!(
-                        "{} and {} have overlapping uncertainty intervals",
-                        top.model_name, runner_up.model_name
-                    ),
+                    reason: "The local auto-judge found overlapping uncertainty intervals".into(),
                 }
             }
         };
@@ -3571,6 +3625,54 @@ mod tests {
     }
 
     // ----- Blind comparison score mapping tests -----
+
+    #[test]
+    fn per_judge_recommendation_requires_non_overlapping_intervals() {
+        let strong = CapabilityEvidence {
+            category: "coding".into(),
+            model_id: 1,
+            model_name: "Coder".into(),
+            scoring_method: "auto_judge:mistral:7b".into(),
+            confidence: evaluation::mean_confidence_95(&[10.0, 10.0, 10.0, 10.0, 10.0]),
+        };
+        let weak = CapabilityEvidence {
+            category: "coding".into(),
+            model_id: 2,
+            model_name: "General".into(),
+            scoring_method: "auto_judge:mistral:7b".into(),
+            confidence: evaluation::mean_confidence_95(&[5.0, 5.0, 5.0, 5.0, 5.0]),
+        };
+
+        let recommendation = recommendation_for_scored_pair("coding".into(), vec![&weak, &strong]);
+
+        assert_eq!(recommendation.recommended_model.as_deref(), Some("Coder"));
+        assert_eq!(recommendation.confidence, "directional");
+        assert!(recommendation.reason.contains("auto_judge:mistral:7b"));
+    }
+
+    #[test]
+    fn per_judge_recommendation_withholds_overlapping_scores() {
+        let first = CapabilityEvidence {
+            category: "analysis".into(),
+            model_id: 1,
+            model_name: "First".into(),
+            scoring_method: "auto_judge:mistral:7b".into(),
+            confidence: evaluation::mean_confidence_95(&[8.0, 9.0, 8.0, 9.0, 8.0]),
+        };
+        let second = CapabilityEvidence {
+            category: "analysis".into(),
+            model_id: 2,
+            model_name: "Second".into(),
+            scoring_method: "auto_judge:mistral:7b".into(),
+            confidence: evaluation::mean_confidence_95(&[8.0, 8.0, 9.0, 8.0, 9.0]),
+        };
+
+        let recommendation =
+            recommendation_for_scored_pair("analysis".into(), vec![&first, &second]);
+
+        assert_eq!(recommendation.recommended_model, None);
+        assert_eq!(recommendation.confidence, "inconclusive");
+    }
 
     #[test]
     fn blind_sample_selects_exactly_one_trial_per_prompt_deterministically() {

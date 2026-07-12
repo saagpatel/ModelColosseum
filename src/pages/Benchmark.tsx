@@ -391,6 +391,7 @@ function ConfigureModal({
   onStart: (modelIds: number[], config: EvaluationConfig) => void;
   onCancel: () => void;
 }) {
+  const dialogRef = useRef<HTMLFormElement>(null);
   const { models } = useAppStore();
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [repetitions, setRepetitions] = useState(3);
@@ -400,6 +401,15 @@ function ConfigureModal({
   const [numPredict, setNumPredict] = useState(1024);
   const [think, setThink] = useState(false);
   const [seed, setSeed] = useState("");
+
+  useEffect(() => {
+    dialogRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onCancel();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onCancel]);
 
   const toggle = (id: number) => {
     setSelected((prev) => {
@@ -430,10 +440,15 @@ function ConfigureModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm">
       <form
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="benchmark-configure-title"
+        tabIndex={-1}
         onSubmit={handleSubmit}
         className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-slate-700 bg-slate-900 p-6 shadow-2xl"
       >
-        <h2 className="mb-1 text-lg font-bold text-slate-100">
+        <h2 id="benchmark-configure-title" className="mb-1 text-lg font-bold text-slate-100">
           Select Models to Benchmark
         </h2>
         <p className="mb-5 text-sm text-slate-500">
@@ -734,9 +749,23 @@ export function Benchmark() {
   const [evidenceRevision, setEvidenceRevision] = useState(0);
   const importFileRef = useRef<HTMLInputElement>(null);
   const replayFileRef = useRef<HTMLInputElement>(null);
+  const replayDialogRef = useRef<HTMLElement>(null);
   const [replayJson, setReplayJson] = useState<string | null>(null);
   const [replayReadiness, setReplayReadiness] = useState<ReplayReadiness | null>(null);
   const [replayBusy, setReplayBusy] = useState(false);
+
+  useEffect(() => {
+    if (!replayReadiness) return;
+    replayDialogRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !replayBusy) {
+        setReplayReadiness(null);
+        setReplayJson(null);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [replayReadiness, replayBusy]);
 
   useBenchmarkEvents(runId);
 
@@ -1228,7 +1257,7 @@ export function Benchmark() {
         </h2>
         <p className="max-w-sm text-center text-sm text-slate-500">
           {wasCancelled
-            ? "Completed work was preserved for audit, and all remaining trials were excluded."
+            ? "Completed work was preserved for audit, and all unfinished trials were marked cancelled and excluded from recommendations."
             : errorMessage ?? "An unknown error occurred."}
         </p>
         <button
@@ -1286,7 +1315,7 @@ export function Benchmark() {
     <div className="flex h-full flex-col bg-slate-950">
       {replayReadiness && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 p-4 backdrop-blur-sm">
-          <section aria-labelledby="replay-readiness-title" className="max-h-[90vh] w-full max-w-2xl overflow-auto rounded-xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
+          <section ref={replayDialogRef} role="dialog" aria-modal="true" aria-labelledby="replay-readiness-title" tabIndex={-1} className="max-h-[90vh] w-full max-w-2xl overflow-auto rounded-xl border border-slate-700 bg-slate-900 p-4 shadow-2xl focus:outline-none sm:p-6">
             <h2 id="replay-readiness-title" className="text-xl font-bold text-slate-100">Replay readiness</h2>
             <p className="mt-1 text-sm text-slate-400">{replayReadiness.classification.replaceAll("_", " ")} · source {replayReadiness.source_manifest_digest.slice(0, 12)}</p>
             <div className="mt-4 grid gap-2 sm:grid-cols-3">
@@ -1316,9 +1345,9 @@ export function Benchmark() {
       )}
 
       {/* Header */}
-      <div className="flex h-14 shrink-0 items-center justify-between border-b border-slate-800 px-6">
+      <div className="flex min-h-14 shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-4 py-2 sm:px-6">
         <h1 className="text-base font-bold text-slate-100">Benchmark Mode</h1>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <button
             onClick={() => setShowRunHistory(true)}
             className="h-9 rounded-lg bg-slate-800 px-4 text-sm font-medium text-slate-300 transition-colors hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"

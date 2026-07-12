@@ -483,6 +483,50 @@ mod tests {
     }
 
     #[test]
+    fn maximum_supported_trial_plan_is_balanced_and_deterministic() {
+        let prompts: Vec<i64> = (1..=15).collect();
+        let config = EvaluationConfig {
+            repetitions: 20,
+            warmup_repetitions: 3,
+            timeout_seconds: 3_600,
+            temperature: 2.0,
+            num_predict: Some(32_768),
+            think: true,
+            seed: Some(9_001),
+        };
+        let first = build_trial_plan(&prompts, &[101, 202], &config, 9_001).unwrap();
+        let replay = build_trial_plan(&prompts, &[101, 202], &config, 9_001).unwrap();
+
+        assert_eq!(first, replay);
+        assert_eq!(first.len(), 606);
+        assert_eq!(
+            first
+                .iter()
+                .filter(|trial| trial.kind == TrialKind::Measured)
+                .count(),
+            600
+        );
+        assert_eq!(
+            first
+                .iter()
+                .filter(|trial| trial.comparison_position.as_deref() == Some("left"))
+                .count(),
+            300
+        );
+        assert_eq!(
+            first
+                .iter()
+                .filter(|trial| trial.comparison_position.as_deref() == Some("right"))
+                .count(),
+            300
+        );
+        assert!(first
+            .iter()
+            .enumerate()
+            .all(|(index, trial)| trial.execution_order == index));
+    }
+
+    #[test]
     fn confidence_requires_repeated_samples() {
         let one = mean_confidence_95(&[8.0]);
         assert!(!one.sufficient_sample);

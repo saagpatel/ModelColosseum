@@ -40,7 +40,7 @@ Default protocol:
 - randomized measured execution order;
 - balanced randomized left/right positions for two-model comparisons;
 - 120-second timeout per generation;
-- temperature 0.2 and a 1,024-token cap.
+- temperature 0.2 and a 1,024-token cap;
 - model thinking disabled so the token budget measures user-visible output; this can be enabled and is recorded.
 
 Operators can change these values before a run. The exact choices are part of the manifest and export.
@@ -90,6 +90,14 @@ Human-versus-auto-judge disagreement is calculated only for comparison pairs tha
 Trial states are `pending`, `running`, `completed`, `cancelled`, `timeout`, `failed`, or `excluded`. Empty output is preserved as a raw result but marked excluded. Judge attempts separately preserve judge identity/settings, raw judge output, parse failures, cancellation, and errors.
 
 The JSON evidence export contains the immutable manifest, evidence summary, every trial, every raw measured result, every judge attempt, and every human comparison assignment/outcome. It is the preferred reproduction and audit artifact. The older Markdown report remains for human-readable legacy compatibility.
+
+The results surface must explain the decision rather than merely display a winner. It shows run validity, measured and excluded sample counts, uncertainty by capability and judge method, position-bias status, human/auto-judge disagreement, judge provenance, hardware dependence, and the reason each recommendation is directional, inconclusive, insufficient, or withheld. Cancellation preserves completed evidence, marks unfinished trials as cancelled, and excludes the entire incomplete run from recommendations and Elo.
+
+## Same-host acceptance boundary
+
+Deterministic fixture replay is the canonical regression check for planning, position balancing, confidence calculations, invalid-trial handling, judge disagreement, Elo eligibility, immutable manifests, migrations, export shape, and Ollama-unavailable behavior. A maximum supported two-model plan contains 600 measured trials plus six warm-ups and must reproduce exactly from its recorded seed while assigning 300 measured left and 300 measured right positions.
+
+A live same-host run adds evidence that the installed Ollama runtime, exact local model artifacts, streaming path, cancellation, SQLite persistence, and app UI work together. It does not prove that seeded generation is bit-for-bit deterministic, that an auto-judge is objectively correct, or that quality/performance transfers to another runtime or physical host. Those claims remain explicitly unknown until independently measured.
 
 ## Migration and rollback
 

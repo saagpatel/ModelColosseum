@@ -6,10 +6,11 @@ type Phase = "loading" | "judging" | "reveal" | "error";
 
 interface Props {
   runId: number;
+  onePerPrompt?: boolean;
   onClose: () => void;
 }
 
-export function BlindCompare({ runId, onClose }: Props) {
+export function BlindCompare({ runId, onePerPrompt = false, onClose }: Props) {
   const [phase, setPhase] = useState<Phase>("loading");
   const [comparison, setComparison] = useState<BlindComparison | null>(null);
   const [pairIndex, setPairIndex] = useState(0);
@@ -19,7 +20,10 @@ export function BlindCompare({ runId, onClose }: Props) {
   useEffect(() => {
     const load = async () => {
       try {
-        const data = await invoke<BlindComparison>("start_blind_comparison", { runId });
+        const data = await invoke<BlindComparison>("start_blind_comparison", {
+          runId,
+          onePerPrompt,
+        });
         setComparison(data);
         setPhase("judging");
       } catch (err) {
@@ -29,7 +33,7 @@ export function BlindCompare({ runId, onClose }: Props) {
       }
     };
     void load();
-  }, [runId]);
+  }, [runId, onePerPrompt]);
 
   const handlePick = async (winner: "left" | "right" | "tie") => {
     if (!comparison) return;
@@ -101,8 +105,9 @@ export function BlindCompare({ runId, onClose }: Props) {
                 </span>
               </p>
             </div>
-            {/* Progress dots */}
-            <div className="flex max-w-full flex-wrap items-center gap-1" aria-label={`Comparison ${pairIndex + 1} of ${total}`}>
+            <div className="flex items-center gap-3">
+              {/* Progress dots */}
+              <div className="flex max-w-full flex-wrap items-center gap-1" aria-label={`Comparison ${pairIndex + 1} of ${total}`}>
               {comparison?.pairs.map((_, i) => (
                 <div
                   key={i}
@@ -115,6 +120,13 @@ export function BlindCompare({ runId, onClose }: Props) {
                   }`}
                 />
               ))}
+              </div>
+              <button
+                onClick={onClose}
+                className="h-8 rounded-lg bg-slate-800 px-3 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
+              >
+                Close
+              </button>
             </div>
           </div>
 

@@ -730,6 +730,7 @@ export function Benchmark() {
   const [compareRuns, setCompareRuns] = useState<[number, number] | null>(null);
   const [showAutoJudge, setShowAutoJudge] = useState(false);
   const [showBlindCompare, setShowBlindCompare] = useState(false);
+  const [blindOnePerPrompt, setBlindOnePerPrompt] = useState(false);
   const [evidenceRevision, setEvidenceRevision] = useState(0);
   const importFileRef = useRef<HTMLInputElement>(null);
 
@@ -1027,6 +1028,7 @@ export function Benchmark() {
         {showBlindCompare && viewingRunId !== null && (
           <BlindCompare
             runId={viewingRunId}
+            onePerPrompt={blindOnePerPrompt}
             onClose={() => {
               setShowBlindCompare(false);
               setEvidenceRevision((revision) => revision + 1);
@@ -1099,11 +1101,25 @@ export function Benchmark() {
               {blindMode ? "Blind ON" : "Blind Mode"}
             </button>
             <button
-              onClick={() => setShowBlindCompare(true)}
+              onClick={() => {
+                setBlindOnePerPrompt(true);
+                setShowBlindCompare(true);
+              }}
+              disabled={new Set(results.map((r) => r.model_id)).size !== 2}
+              className="h-8 rounded-lg bg-gold-500/15 px-3 text-xs font-medium text-gold-300 transition-colors hover:bg-gold-500/25 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
+              title="Judge one deterministic randomized trial per prompt"
+            >
+              Blind Sample
+            </button>
+            <button
+              onClick={() => {
+                setBlindOnePerPrompt(false);
+                setShowBlindCompare(true);
+              }}
               disabled={new Set(results.map((r) => r.model_id)).size !== 2}
               className="h-8 rounded-lg bg-slate-800 px-3 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
             >
-              Blind Compare
+              Blind Compare All
             </button>
             <button
               onClick={() => setShowAutoJudge(true)}

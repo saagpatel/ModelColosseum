@@ -1197,6 +1197,21 @@ export function Benchmark() {
 
   // ── Phase: editing + configuring ──
 
+  if (compareRuns !== null) {
+    return (
+      <div className="flex h-full flex-col bg-slate-950">
+        <RunComparison
+          runA={compareRuns[0]}
+          runB={compareRuns[1]}
+          onBack={() => {
+            setCompareRuns(null);
+            setShowRunHistory(true);
+          }}
+        />
+      </div>
+    );
+  }
+
   // Past runs modal from editor
   if (showRunHistory) {
     return (

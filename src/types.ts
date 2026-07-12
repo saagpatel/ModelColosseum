@@ -241,6 +241,9 @@ export interface RunEvidence {
 
 export interface RunComparability {
   comparable: boolean;
+  classification: "exact_reproduction" | "hardware_variant" | "runtime_variant" | "incomparable";
+  quality_comparable: boolean;
+  performance_comparable: boolean;
   reasons: string[];
 }
 

@@ -99,6 +99,7 @@ export function RunHistory({ onViewRun, onCompare }: RunHistoryProps) {
         <div className="shrink-0 flex items-center justify-between border-b border-slate-800 bg-slate-900/60 px-6 py-2">
           <span className="text-xs text-slate-400">2 runs selected</span>
           <button
+            type="button"
             onClick={handleCompare}
             className="h-8 rounded-lg bg-gold-500 px-4 text-xs font-bold text-slate-950 transition-colors hover:bg-gold-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-400"
           >

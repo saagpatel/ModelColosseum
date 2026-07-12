@@ -698,6 +698,7 @@ pub fn run() {
             benchmark::cancel_auto_judge,
             benchmark::get_run_evidence,
             benchmark::get_run_comparability,
+            benchmark::export_reproduction_receipt,
             benchmark::get_benchmark_leaderboard,
             benchmark::get_run_comparison,
             benchmark::start_blind_comparison,

@@ -180,7 +180,23 @@ pub struct RunEvidence {
 #[derive(Debug, Serialize, Clone)]
 pub struct RunComparability {
     pub comparable: bool,
+    pub classification: String,
+    pub quality_comparable: bool,
+    pub performance_comparable: bool,
     pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReproductionReceipt {
+    pub version: u32,
+    pub created_at_unix_ms: u64,
+    pub run_a: i64,
+    pub run_b: i64,
+    pub run_a_manifest_digest: String,
+    pub run_b_manifest_digest: String,
+    pub comparability: RunComparability,
+    pub run_a_manifest: RunManifest,
+    pub run_b_manifest: RunManifest,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -2394,36 +2410,60 @@ pub async fn get_run_evidence(run_id: i64) -> Result<RunEvidence, String> {
 
 #[tauri::command]
 pub async fn get_run_comparability(run_a: i64, run_b: i64) -> Result<RunComparability, String> {
-    let load = |run_id: i64| -> Result<(bool, RunManifest), String> {
+    let (valid_a, a, _, valid_b, b, _) = load_comparison_manifests(run_a, run_b)?;
+    compare_manifests(valid_a, &a, valid_b, &b)
+}
+
+fn load_comparison_manifests(
+    run_a: i64,
+    run_b: i64,
+) -> Result<(bool, RunManifest, String, bool, RunManifest, String), String> {
+    let load = |run_id: i64| -> Result<(bool, RunManifest, String), String> {
         let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
-        let (comparable, manifest_json): (i64, String) = conn
+        let (comparable, manifest_json, manifest_digest): (i64, String, String) = conn
             .query_row(
-                "SELECT br.comparable, erm.manifest_json
+                "SELECT br.comparable, erm.manifest_json, erm.manifest_digest
                  FROM benchmark_runs br
                  JOIN evaluation_run_manifests erm ON erm.run_id = br.id
                  WHERE br.id = ?1",
                 [run_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .map_err(|e| format!("run {run_id} has no reproducibility manifest: {e}"))?;
         let manifest = serde_json::from_str(&manifest_json)
             .map_err(|e| format!("run {run_id} manifest is invalid: {e}"))?;
-        Ok((comparable != 0, manifest))
+        Ok((comparable != 0, manifest, manifest_digest))
     };
-    let (valid_a, a) = load(run_a)?;
-    let (valid_b, b) = load(run_b)?;
+    let (valid_a, a, digest_a) = load(run_a)?;
+    let (valid_b, b, digest_b) = load(run_b)?;
+    Ok((valid_a, a, digest_a, valid_b, b, digest_b))
+}
+
+fn compare_manifests(
+    valid_a: bool,
+    a: &RunManifest,
+    valid_b: bool,
+    b: &RunManifest,
+) -> Result<RunComparability, String> {
     let mut reasons = Vec::new();
+    let mut identity_differs = false;
+    let mut runtime_differs = false;
+    let mut hardware_differs = false;
     if !valid_a || !valid_b {
         reasons.push("One or both runs contain invalid or incomplete trials".into());
+        identity_differs = true;
     }
     if a.suite.digest != b.suite.digest {
         reasons.push("Suite or prompt digest differs".into());
+        identity_differs = true;
     }
     if a.ollama.server_version != b.ollama.server_version {
         reasons.push("Ollama server version differs".into());
+        runtime_differs = true;
     }
     if digest_json(&a.hardware)? != digest_json(&b.hardware)? {
         reasons.push("Hardware/runtime snapshot differs".into());
+        hardware_differs = true;
     }
     let model_keys = |manifest: &RunManifest| {
         manifest
@@ -2432,8 +2472,9 @@ pub async fn get_run_comparability(run_a: i64, run_b: i64) -> Result<RunComparab
             .map(|model| (model.exact_tag.clone(), model.digest.clone()))
             .collect::<Vec<_>>()
     };
-    if model_keys(&a) != model_keys(&b) {
+    if model_keys(a) != model_keys(b) {
         reasons.push("Exact model tags or digests differ".into());
+        identity_differs = true;
     }
     let settings_equal = a.generation.repetitions == b.generation.repetitions
         && a.generation.warmup_repetitions == b.generation.warmup_repetitions
@@ -2443,11 +2484,43 @@ pub async fn get_run_comparability(run_a: i64, run_b: i64) -> Result<RunComparab
         && a.generation.think == b.generation.think;
     if !settings_equal {
         reasons.push("Generation or trial settings differ".into());
+        identity_differs = true;
     }
+    let classification = if identity_differs {
+        "incomparable"
+    } else if runtime_differs {
+        "runtime_variant"
+    } else if hardware_differs {
+        "hardware_variant"
+    } else {
+        "exact_reproduction"
+    };
     Ok(RunComparability {
-        comparable: reasons.is_empty(),
+        comparable: classification == "exact_reproduction",
+        classification: classification.into(),
+        quality_comparable: !identity_differs && !runtime_differs,
+        performance_comparable: !identity_differs && !runtime_differs && !hardware_differs,
         reasons,
     })
+}
+
+#[tauri::command]
+pub async fn export_reproduction_receipt(run_a: i64, run_b: i64) -> Result<String, String> {
+    let (valid_a, manifest_a, digest_a, valid_b, manifest_b, digest_b) =
+        load_comparison_manifests(run_a, run_b)?;
+    let comparability = compare_manifests(valid_a, &manifest_a, valid_b, &manifest_b)?;
+    serde_json::to_string_pretty(&ReproductionReceipt {
+        version: 1,
+        created_at_unix_ms: unix_time_ms(),
+        run_a,
+        run_b,
+        run_a_manifest_digest: digest_a,
+        run_b_manifest_digest: digest_b,
+        comparability,
+        run_a_manifest: manifest_a,
+        run_b_manifest: manifest_b,
+    })
+    .map_err(|e| format!("reproduction receipt serialize error: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -3783,6 +3856,90 @@ mod tests {
 
         assert_eq!(winner_id, result_b_id);
         assert_eq!(loser_id, result_a_id);
+    }
+
+    fn comparison_manifest() -> RunManifest {
+        RunManifest {
+            schema_version: 1,
+            run_key: "run".into(),
+            created_at_unix_ms: 1,
+            suite: SuiteSnapshot {
+                id: 1,
+                name: "suite".into(),
+                description: None,
+                digest: "suite-digest".into(),
+                prompts: vec![],
+            },
+            models: vec![ModelSnapshot {
+                database_id: 1,
+                exact_tag: "model:tag".into(),
+                digest: Some("model-digest".into()),
+                size_bytes: None,
+                parameter_size: None,
+                quantization: None,
+                family: None,
+                modified_at: None,
+                capabilities: vec![],
+            }],
+            ollama: OllamaSnapshot {
+                server_version: "1.0".into(),
+                endpoint: "http://localhost:11434".into(),
+            },
+            hardware: HardwareSnapshot {
+                os_name: Some("macOS".into()),
+                os_version: Some("1".into()),
+                kernel_version: Some("1".into()),
+                architecture: "arm64".into(),
+                cpu_brand: Some("Apple".into()),
+                logical_cpu_count: 8,
+                total_memory_bytes: 16,
+            },
+            generation: EvaluationConfig::default(),
+            measured_trial_count: 3,
+            warmup_trial_count: 1,
+        }
+    }
+
+    #[test]
+    fn identical_manifests_are_exact_reproductions() {
+        let manifest = comparison_manifest();
+        let result = compare_manifests(true, &manifest, true, &manifest).unwrap();
+        assert_eq!(result.classification, "exact_reproduction");
+        assert!(result.quality_comparable);
+        assert!(result.performance_comparable);
+    }
+
+    #[test]
+    fn hardware_variants_allow_quality_but_not_performance_comparison() {
+        let first = comparison_manifest();
+        let mut second = first.clone();
+        second.hardware.total_memory_bytes = 32;
+        let result = compare_manifests(true, &first, true, &second).unwrap();
+        assert_eq!(result.classification, "hardware_variant");
+        assert!(result.quality_comparable);
+        assert!(!result.performance_comparable);
+    }
+
+    #[test]
+    fn runtime_variants_are_exploratory() {
+        let first = comparison_manifest();
+        let mut second = first.clone();
+        second.ollama.server_version = "2.0".into();
+        let result = compare_manifests(true, &first, true, &second).unwrap();
+        assert_eq!(result.classification, "runtime_variant");
+        assert!(!result.quality_comparable);
+        assert!(!result.performance_comparable);
+    }
+
+    #[test]
+    fn changed_model_identity_is_incomparable() {
+        let first = comparison_manifest();
+        let mut second = first.clone();
+        second.models[0].digest = Some("different".into());
+        let result = compare_manifests(true, &first, true, &second).unwrap();
+        assert_eq!(result.classification, "incomparable");
+        assert!(!result.quality_comparable);
+        assert!(!result.performance_comparable);
     }
 
     // ----- SuiteExport JSON round-trip test -----

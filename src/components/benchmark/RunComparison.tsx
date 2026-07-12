@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { RunComparability, RunComparisonEntry } from "../../types";
+import { downloadBlob } from "../../utils/download";
 
 interface RunComparisonProps {
   runA: number;
@@ -47,6 +48,15 @@ export function RunComparison({ runA, runB, onBack }: RunComparisonProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const exportReceipt = async () => {
+    try {
+      const json = await invoke<string>("export_reproduction_receipt", { runA, runB });
+      downloadBlob(json, `reproduction-receipt-${runA}-vs-${runB}.json`, "application/json");
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
   useEffect(() => {
     const load = async () => {
       try {
@@ -87,6 +97,12 @@ export function RunComparison({ runA, runB, onBack }: RunComparisonProps) {
         <h2 className="text-base font-semibold text-slate-100">
           Run #{runA} vs Run #{runB}
         </h2>
+        <button
+          onClick={() => void exportReceipt()}
+          className="ml-auto rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-200 hover:border-gold-500 hover:text-gold-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-400"
+        >
+          Export reproduction receipt
+        </button>
       </div>
 
       {loading && (
@@ -106,8 +122,16 @@ export function RunComparison({ runA, runB, onBack }: RunComparisonProps) {
             className={`m-4 rounded-lg border p-4 ${comparability?.comparable ? "border-emerald-800 bg-emerald-500/10" : "border-amber-800 bg-amber-500/10"}`}
           >
             <p className={`text-sm font-semibold ${comparability?.comparable ? "text-emerald-300" : "text-amber-200"}`}>
-              {comparability?.comparable ? "Runs are comparable" : "Runs are not comparable — deltas are exploratory only"}
+              {comparability?.classification === "exact_reproduction" && "Exact reproduction — quality and performance may be compared"}
+              {comparability?.classification === "hardware_variant" && "Hardware-variant reproduction — compare quality, not speed"}
+              {comparability?.classification === "runtime_variant" && "Runtime-variant replay — exploratory only"}
+              {comparability?.classification === "incomparable" && "Runs are incomparable — no recommendation may be transferred"}
             </p>
+            {comparability && (
+              <p className="mt-2 text-xs text-slate-300">
+                Quality: {comparability.quality_comparable ? "comparable" : "not comparable"} · Performance: {comparability.performance_comparable ? "comparable" : "hardware/runtime dependent"}
+              </p>
+            )}
             {comparability && comparability.reasons.length > 0 && (
               <ul className="mt-2 space-y-1 text-xs text-amber-300/80">
                 {comparability.reasons.map((reason) => <li key={reason}>• {reason}</li>)}

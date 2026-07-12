@@ -49,7 +49,16 @@ Operators can change these values before a run. The exact choices are part of th
 
 A run is internally comparable only when every planned measured trial completes with a non-empty output under the same immutable manifest. Cancelled, timed-out, failed, or empty-output trials remain visible and are excluded. Any such trial withholds the model recommendation for that run.
 
-Cross-run comparison additionally requires matching:
+Cross-run comparison classifies the relationship instead of collapsing every mismatch into one binary result:
+
+- `exact_reproduction`: suite and prompt digest, exact model tags and digests, generation settings, Ollama version, and hardware/runtime snapshot match. Quality and performance deltas may be compared.
+- `hardware_variant`: evaluation identity and Ollama version match, but hardware differs. Quality evidence may be compared; TTFT, throughput, memory, and other performance deltas remain hardware-dependent.
+- `runtime_variant`: evaluation identity matches but the Ollama version differs. Results are exploratory because a runtime change can affect generation and performance.
+- `incomparable`: a run is invalid/incomplete or the suite, model identity, or generation settings differ. No recommendation transfers between the runs.
+
+The comparison screen exports a reproduction receipt containing both complete manifests, their stored digests, the classification, and every mismatch reason. The receipt explains the comparison without modifying either immutable run.
+
+The classification considers:
 
 - suite/prompt digest;
 - exact model tags and digests;

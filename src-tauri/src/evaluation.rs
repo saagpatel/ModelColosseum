@@ -4,6 +4,8 @@ use std::collections::HashMap;
 
 pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
 pub const MIN_CONFIDENCE_SAMPLES: usize = 3;
+const MIN_SCORE: f64 = 1.0;
+const MAX_SCORE: f64 = 10.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -325,8 +327,8 @@ pub fn mean_confidence_95(values: &[f64]) -> ConfidenceSummary {
     ConfidenceSummary {
         sample_size,
         mean: Some(mean),
-        lower_95: Some(mean - margin),
-        upper_95: Some(mean + margin),
+        lower_95: Some((mean - margin).max(MIN_SCORE)),
+        upper_95: Some((mean + margin).min(MAX_SCORE)),
         sufficient_sample,
         warning: (!sufficient_sample).then(|| {
             format!(
@@ -490,6 +492,15 @@ mod tests {
         assert_eq!(repeated.mean, Some(8.0));
         assert!(repeated.lower_95.unwrap() < 8.0);
         assert!(repeated.upper_95.unwrap() > 8.0);
+    }
+
+    #[test]
+    fn score_confidence_stays_inside_the_score_domain() {
+        let upper = mean_confidence_95(&[10.0, 10.0, 2.0, 10.0, 10.0]);
+        assert_eq!(upper.upper_95, Some(10.0));
+
+        let lower = mean_confidence_95(&[1.0, 1.0, 9.0, 1.0, 1.0]);
+        assert_eq!(lower.lower_95, Some(1.0));
     }
 
     #[test]

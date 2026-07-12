@@ -4,6 +4,7 @@ set -euo pipefail
 MODE="${1:-run}"
 APP_NAME="model-colosseum"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+APP_BINARY="$ROOT_DIR/src-tauri/target/debug/$APP_NAME"
 ORIGINAL_HOME="$HOME"
 
 if [[ -n "${MODEL_COLOSSEUM_HOME:-}" ]]; then
@@ -18,6 +19,23 @@ pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 
 run_dev() {
   pnpm tauri dev
+}
+
+find_repo_app_pid() {
+  local pid executable
+  while read -r pid; do
+    [[ -n "$pid" ]] || continue
+    executable="$(
+      { lsof -a -p "$pid" -d txt -Fn 2>/dev/null || true; } \
+        | sed -n 's/^n//p' \
+        | head -n 1
+    )"
+    if [[ "$executable" == "$APP_BINARY" ]]; then
+      echo "$pid"
+      return 0
+    fi
+  done < <(pgrep -x "$APP_NAME" || true)
+  return 1
 }
 
 case "$MODE" in
@@ -37,16 +55,20 @@ case "$MODE" in
     /usr/bin/log stream --info --style compact --predicate 'process == "model-colosseum"'
     ;;
   --verify|verify)
-    run_dev &
+    DEV_LOG="${TMPDIR:-/tmp}/model-colosseum-dev.log"
+    nohup pnpm tauri dev >"$DEV_LOG" 2>&1 &
     DEV_PID=$!
     for _ in {1..90}; do
-      if pgrep -x "$APP_NAME" >/dev/null; then
+      if APP_PID="$(find_repo_app_pid)"; then
+        echo "ModelColosseum launched from $APP_BINARY (pid $APP_PID)"
+        echo "Dev log: $DEV_LOG"
         exit 0
       fi
       sleep 1
     done
     kill "$DEV_PID" >/dev/null 2>&1 || true
-    echo "ModelColosseum did not launch within 90 seconds" >&2
+    echo "ModelColosseum did not launch from $APP_BINARY within 90 seconds" >&2
+    echo "Dev log: $DEV_LOG" >&2
     exit 1
     ;;
   *)

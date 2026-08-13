@@ -1,0 +1,120 @@
+{
+  "schema": "RunBoundaryImplementationVerificationV1",
+  "verified_at": "2026-08-13T15:34:17Z",
+  "source_revision": "32784b86a94c26125f19c2aad675dc57bd5388d9",
+  "branch": "feat/run-boundary-v1",
+  "decision": "IMPLEMENTATION_COMPLETE",
+  "claim_ceiling": "Current local source implements and verifies the bounded Run Boundary V1 slice and synthetic local app-window workflow. Model quality, deployment fitness, transfer, production behavior, demand, and broad human usefulness remain unproved.",
+  "implementation_gates": {
+    "A_derivation_fidelity": "PASS",
+    "B_truthfulness": "PASS",
+    "C_compatibility": "PASS",
+    "D_privacy": "PASS",
+    "E_ui_usefulness": "PASS",
+    "F_accessibility": "PASS",
+    "G_regression_safety": "PASS",
+    "H_scope_discipline": "PASS"
+  },
+  "checks": [
+    {
+      "name": "focused_boundary_rules",
+      "status": "pass",
+      "evidence": "18 deterministic Rust tests cover directional, abstention, incomplete, incomparable, empty-output, mixed-method conflict, exact per-capability sample distribution, provenance, identity, advisory, clearance-order, and privacy cases."
+    },
+    {
+      "name": "full_rust_regression",
+      "status": "pass",
+      "evidence": "115 tests passed; 0 failed; binary and documentation targets passed."
+    },
+    {
+      "name": "rust_format_and_lint",
+      "status": "pass",
+      "evidence": "cargo fmt --check passed; cargo clippy --offline --lib -- -D warnings passed."
+    },
+    {
+      "name": "frontend_contract",
+      "status": "pass",
+      "evidence": "TypeScript and Vite production build passed with 698 transformed modules; existing large-chunk warning remains."
+    },
+    {
+      "name": "fixture_and_json",
+      "status": "pass",
+      "evidence": "Existing dependency-free fixture verifier passed; all evidence-boundary JSON parsed."
+    },
+    {
+      "name": "compatibility",
+      "status": "pass",
+      "evidence": "Boundary is additive to RunEvidence and bundle v2; legacy DB, immutable manifest, replay integrity/version, recommendation withholding, comparability, cancellation, raw evidence, and Elo tests passed."
+    },
+    {
+      "name": "privacy",
+      "status": "pass",
+      "evidence": "Metadata-only serialization omits hostile free-form comparability notes, raw-content keys, home paths, and account-like values; full evidence export remains separate and explicitly content-bearing."
+    },
+    {
+      "name": "independent_quality_gate",
+      "status": "pass",
+      "evidence": "QualityGateDecisionV1 returned GO for all eight scoped implementation gates; app-window and release evidence remain advisory unknowns."
+    },
+    {
+      "name": "independent_read_only_review",
+      "status": "pass",
+      "evidence": "Independent full-diff source review returned CLEAR after mixed-method, no-scored-evidence, symlink, fixture-contract, focus-restoration, provenance-reference, and exact sample-distribution repairs. The reviewer did not run the product tests."
+    },
+    {
+      "name": "codex_workflow_eval",
+      "status": "pass",
+      "evidence": "Mandatory operating check eval-VGk-2026-08-13T15:16:25 passed 5/5 in 3m57s. It used existing local Ollama inference and is not ModelColosseum, Run Boundary, or Deployment Fit evidence. Receipt: /Users/d/.codex/reports/codexkit/evals/run-codex-evals-2026-08-13.json"
+    }
+  ],
+  "contract_mutations": [
+    {
+      "name": "model_failure_reason",
+      "reason": "The objective required empty model output to remain distinct from timeout, runtime, cancellation, and persistence failures; the original taxonomy had no truthful code for that observed state."
+    },
+    {
+      "name": "deterministic_generated_at",
+      "reason": "The source run start timestamp makes repeated boundary exports byte-stable instead of inventing fresh measurement time."
+    },
+    {
+      "name": "conflicting_judge_methods",
+      "reason": "Conflicting method-specific winners are classified as judge-method mismatch rather than falsely described as overlapping intervals."
+    },
+    {
+      "name": "no_scored_evidence",
+      "reason": "Completed result-backed outputs without eligible same-method scores require a distinct abstention boundary instead of being mislabeled as absent measurement."
+    },
+    {
+      "name": "exact_rescore_clearance",
+      "reason": "Rescoring without a new run is permitted only when one capability has at least three result-backed completed measured trials for each of at least two exact candidates."
+    },
+    {
+      "name": "immutable_distinct_score_evidence",
+      "reason": "PR review proved that repeated score revisions, mutable prompt categories, and display-name collisions could weaken the deterministic boundary. The consumer now uses the latest score per distinct result, immutable manifest categories, and model IDs for directional conflicts."
+    }
+  ],
+  "package_manager_effects": {
+    "offline_frozen_hydration": "pnpm install --offline --frozen-lockfile reused 128 cached packages and downloaded 0",
+    "repository_dependency_files_changed": false,
+    "disposable_products_removed": [
+      "node_modules",
+      "dist"
+    ]
+  },
+  "unknowns": [
+    "App-window keyboard, focus, narrow-layout, export, and drill-down behavior was observed by an operator against synthetic fixtures, but broad human comprehension and usefulness remain unstudied.",
+    "Runtime identity at the end of an evidence window is not currently recorded and remains unknown in each boundary.",
+    "Prompt-cache state, calibrated thermal attribution, effective loaded context, external-proof freshness, transfer, production behavior, and demand remain unknown.",
+    "No preregistered deterministic quality floor is stored by the current product, so quality_gate_failed is typed but not emitted from current persisted runs."
+  ],
+  "actions_not_taken": [
+    "No ModelColosseum or Deployment Fit model inference; only the separately required Codex workflow smoke check used existing local Ollama inference.",
+    "No V2 holdout access or candidate freeze attempt.",
+    "No model, runtime, or dependency installation or upgrade.",
+    "No database migration, service, scheduler, telemetry, route, dashboard, runtime abstraction, or Deployment Fit logic.",
+    "No push, pull request, merge, deploy, publish, account, user contact, or external-system mutation.",
+    "No modification to the original checkout."
+  ],
+  "deployment_fit_state": "PARKED",
+  "app_window_acceptance": "ACCEPTANCE_COMPLETE"
+}

@@ -1,4 +1,6 @@
 use rusqlite::{Connection, Result as SqlResult};
+#[cfg(debug_assertions)]
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -9,12 +11,64 @@ fn db_path() -> PathBuf {
     home.join(".model-colosseum")
 }
 
+fn live_db_file() -> PathBuf {
+    db_path().join("colosseum.db")
+}
+
+#[cfg(debug_assertions)]
+fn nearest_existing_ancestor(path: &Path) -> Option<&Path> {
+    let mut candidate = path;
+    loop {
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        candidate = candidate.parent()?;
+    }
+}
+
+#[cfg(debug_assertions)]
+fn validate_acceptance_db_path(path: &Path, live_dir: &Path) -> SqlResult<PathBuf> {
+    if !path.is_absolute() || path.extension().and_then(|value| value.to_str()) != Some("db") {
+        return Err(rusqlite::Error::InvalidPath(path.to_path_buf()));
+    }
+    if path.starts_with(live_dir) {
+        return Err(rusqlite::Error::InvalidPath(path.to_path_buf()));
+    }
+    if let Ok(resolved_live_dir) = live_dir.canonicalize() {
+        if path
+            .canonicalize()
+            .is_ok_and(|resolved| resolved.starts_with(&resolved_live_dir))
+        {
+            return Err(rusqlite::Error::InvalidPath(path.to_path_buf()));
+        }
+    }
+    if let (Some(parent), Ok(resolved_live_dir)) = (path.parent(), live_dir.canonicalize()) {
+        if nearest_existing_ancestor(parent)
+            .and_then(|ancestor| ancestor.canonicalize().ok())
+            .is_some_and(|resolved| resolved.starts_with(resolved_live_dir))
+        {
+            return Err(rusqlite::Error::InvalidPath(path.to_path_buf()));
+        }
+    }
+    Ok(path.to_path_buf())
+}
+
+fn selected_db_file() -> SqlResult<PathBuf> {
+    #[cfg(debug_assertions)]
+    if let Some(value) = std::env::var_os("MODEL_COLOSSEUM_ACCEPTANCE_DB_PATH") {
+        return validate_acceptance_db_path(Path::new(&value), &db_path());
+    }
+    Ok(live_db_file())
+}
+
 pub fn init_db() -> SqlResult<()> {
-    let dir = db_path();
-    std::fs::create_dir_all(&dir).map_err(|e| {
+    let path = selected_db_file()?;
+    let dir = path
+        .parent()
+        .ok_or_else(|| rusqlite::Error::InvalidPath(path.clone()))?;
+    std::fs::create_dir_all(dir).map_err(|e| {
         rusqlite::Error::InvalidPath(dir.join(format!("(create_dir_all failed: {e})")))
     })?;
-    let path = dir.join("colosseum.db");
 
     let conn = Connection::open(&path)?;
 
@@ -801,5 +855,64 @@ mod tests {
                 [run_id],
             )
             .is_err());
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn acceptance_database_path_is_absolute_disposable_and_outside_live_data() {
+        let live_dir = Path::new("/Users/example/.model-colosseum");
+        assert!(validate_acceptance_db_path(Path::new("relative/fixture.db"), live_dir).is_err());
+        assert!(validate_acceptance_db_path(
+            Path::new("/Users/example/.model-colosseum/colosseum.db"),
+            live_dir
+        )
+        .is_err());
+        assert!(validate_acceptance_db_path(
+            Path::new("/Users/example/.model-colosseum/nested/fixture.db"),
+            live_dir
+        )
+        .is_err());
+        assert!(validate_acceptance_db_path(
+            Path::new("/tmp/model-colosseum-acceptance/fixture.sqlite"),
+            live_dir
+        )
+        .is_err());
+
+        let admitted = validate_acceptance_db_path(
+            Path::new("/tmp/model-colosseum-acceptance/fixture.db"),
+            live_dir,
+        )
+        .unwrap();
+        assert_eq!(
+            admitted,
+            PathBuf::from("/tmp/model-colosseum-acceptance/fixture.db")
+        );
+    }
+
+    #[cfg(all(debug_assertions, unix))]
+    #[test]
+    fn acceptance_database_path_rejects_symlink_into_live_data() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "model-colosseum-acceptance-path-test-{}",
+            std::process::id()
+        ));
+        let live_dir = root.join("live");
+        let acceptance_dir = root.join("acceptance");
+        std::fs::create_dir_all(&live_dir).unwrap();
+        std::fs::create_dir_all(&acceptance_dir).unwrap();
+        let live_file = live_dir.join("colosseum.db");
+        std::fs::write(&live_file, b"live").unwrap();
+        let linked_file = acceptance_dir.join("fixture.db");
+        symlink(&live_file, &linked_file).unwrap();
+
+        assert!(validate_acceptance_db_path(&linked_file, &live_dir).is_err());
+
+        let linked_dir = acceptance_dir.join("linked-live");
+        symlink(&live_dir, &linked_dir).unwrap();
+        let missing_descendant = linked_dir.join("new/fixture.db");
+        assert!(validate_acceptance_db_path(&missing_descendant, &live_dir).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

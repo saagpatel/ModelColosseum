@@ -1,7 +1,7 @@
 {
   "schema": "RunBoundaryImplementationVerificationV1",
-  "verified_at": "2026-08-13T15:13:16Z",
-  "source_revision": "af1fdc1c98ab3c85646a885155f61584be3ebff9",
+  "verified_at": "2026-08-13T15:34:17Z",
+  "source_revision": "32784b86a94c26125f19c2aad675dc57bd5388d9",
   "branch": "feat/run-boundary-v1",
   "decision": "IMPLEMENTATION_COMPLETE",
   "claim_ceiling": "Current local source implements and verifies the bounded Run Boundary V1 slice and synthetic local app-window workflow. Model quality, deployment fitness, transfer, production behavior, demand, and broad human usefulness remain unproved.",
@@ -24,7 +24,7 @@
     {
       "name": "full_rust_regression",
       "status": "pass",
-      "evidence": "113 tests passed; 0 failed; binary and documentation targets passed."
+      "evidence": "115 tests passed; 0 failed; binary and documentation targets passed."
     },
     {
       "name": "rust_format_and_lint",
@@ -87,6 +87,10 @@
     {
       "name": "exact_rescore_clearance",
       "reason": "Rescoring without a new run is permitted only when one capability has at least three result-backed completed measured trials for each of at least two exact candidates."
+    },
+    {
+      "name": "immutable_distinct_score_evidence",
+      "reason": "PR review proved that repeated score revisions, mutable prompt categories, and display-name collisions could weaken the deterministic boundary. The consumer now uses the latest score per distinct result, immutable manifest categories, and model IDs for directional conflicts."
     }
   ],
   "package_manager_effects": {

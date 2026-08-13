@@ -1,7 +1,7 @@
 {
   "schema": "RunBoundaryAppWindowAcceptanceV1",
-  "observed_at": "2026-08-13T15:13:16Z",
-  "source_commit": "af1fdc1c98ab3c85646a885155f61584be3ebff9",
+  "observed_at": "2026-08-13T15:34:17Z",
+  "source_commit": "32784b86a94c26125f19c2aad675dc57bd5388d9",
   "branch": "feat/run-boundary-v1",
   "decision": "ACCEPTANCE_COMPLETE",
   "claim_ceiling": "Run Boundary V1 passes app-window acceptance against a deterministic disposable database. This proves the real local UI, export, accessibility, compatibility, and failure-boundary workflow for synthetic schema-faithful cases. It is not model-quality, deployment-fit, transfer, demand, production, energy, or live-workload evidence.",
@@ -10,7 +10,7 @@
     "schema": "RunBoundaryAcceptanceFixtureVerificationV1",
     "label": "[ACCEPTANCE FIXTURE — NOT PRODUCT EVIDENCE] Run Boundary V1",
     "database_location": "A disposable database outside /Users/d/.model-colosseum/; removed after verification.",
-    "database_sha256": "af52e9b77ee8ea916eb65c0c83307ab08c699171133abefd61854ba45681c082",
+    "database_sha256": "68b54a1529a9aebb7629e9888d6cd4b7f0e86442f3a5716a63fdbe3aebbee082",
     "counts": {
       "benchmark_runs": 4,
       "evaluation_run_manifests": 3,
@@ -79,8 +79,8 @@
     "debug_override": "MODEL_COLOSSEUM_ACCEPTANCE_DB_PATH is compiled only in debug builds, requires an absolute .db path, and rejects lexical, canonical-parent, and symlink-resolved paths inside the live data directory.",
     "release_behavior": "The acceptance environment branch is absent outside debug_assertions; release selection remains the live database path.",
     "bundle_executable": "model-colosseum",
-    "source_executable_sha256": "43f4b2900b1159383d4c6e0f4e8da643938c23a09bf8666fa14a3826f798cbc3",
-    "bundle_executable_sha256": "43f4b2900b1159383d4c6e0f4e8da643938c23a09bf8666fa14a3826f798cbc3",
+    "source_executable_sha256": "becd1aca0adf5b840c15e557cd7b03b132adae27d527513eb127dd78c25064b6",
+    "bundle_executable_sha256": "becd1aca0adf5b840c15e557cd7b03b132adae27d527513eb127dd78c25064b6",
     "bundle_identity_result": "PASS"
   },
   "app_window_evidence": [
@@ -162,7 +162,7 @@
     "database_path_tests": "PASS: 2/2, including symlink resolution into live data.",
     "run_boundary_tests": "PASS: 18/18.",
     "replay_tests": "PASS: 3/3 focused integrity/version tests.",
-    "full_rust_tests": "PASS: 113/113.",
+    "full_rust_tests": "PASS: 115/115.",
     "rust_format": "PASS.",
     "rust_clippy": "PASS with -D warnings.",
     "typescript_and_production_build": "PASS: 698 modules transformed; the existing large-chunk warning remains.",
@@ -209,6 +209,10 @@
     {
       "defect": "Completed outputs without eligible scores were mislabeled as having no measured evidence.",
       "repair": "Added the distinct no_scored_evidence boundary with completed result references and honest new-run requirements."
+    },
+    {
+      "defect": "PR review found that score revisions could inflate sample size, mutable prompt rows could change capability scope, and equal display names could hide conflicting winners.",
+      "repair": "The boundary now keeps only the latest score per result and method, reads categories from the immutable manifest snapshot, and compares method-specific winners by model ID. The exact rebuilt bundle re-passed directional and abstention states, fixture verification, MCP health, executable identity, and live DB/WAL/SHM integrity. The unchanged UI/export/accessibility paths retain the earlier comprehensive acceptance in this record."
     }
   ],
   "remaining_unknowns": [

@@ -72,7 +72,7 @@
   },
   "decision": {
     "status": "abstain",
-    "evidence_status": "partial",
+    "evidence_status": "invalid",
     "subject": "fixture capability choice",
     "summary": "Abstain: the planned measured run is incomplete and contains no eligible measured evidence.",
     "claim_ceiling": "The fixture demonstrates deterministic abstention and clearance ordering only; it is not product or model evidence."

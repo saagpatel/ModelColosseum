@@ -30,23 +30,25 @@ interface ResultsGridProps {
   results: BenchmarkResult[];
   blindMode: boolean;
   onScoreChange: (resultId: number, score: number) => void;
-  focusResultId?: number | null;
+  focusResult?: { resultId: number; returnFocus: HTMLElement } | null;
 }
 
-export function ResultsGrid({ results, blindMode, onScoreChange, focusResultId = null }: ResultsGridProps) {
+export function ResultsGrid({ results, blindMode, onScoreChange, focusResult = null }: ResultsGridProps) {
   const [openResult, setOpenResult] = useState<BenchmarkResult | null>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const closeOutput = useCallback(() => setOpenResult(null), []);
 
   useEffect(() => {
-    if (focusResultId === null) return;
-    const result = results.find((candidate) => candidate.id === focusResultId);
+    if (focusResult === null) return;
+    const result = results.find((candidate) => candidate.id === focusResult.resultId);
     if (!result) return;
-    returnFocusRef.current =
-      document.getElementById(`run-boundary-result-${focusResultId}`) ??
-      (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    returnFocusRef.current = focusResult.returnFocus.isConnected
+      ? focusResult.returnFocus
+      : document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
     setOpenResult(result);
-  }, [focusResultId, results]);
+  }, [focusResult, results]);
 
   if (results.length === 0) {
     return (

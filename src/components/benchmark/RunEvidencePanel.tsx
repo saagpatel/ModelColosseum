@@ -10,7 +10,7 @@ interface RunEvidencePanelProps {
   runId: number;
   refreshKey?: string;
   availableResultIds?: number[];
-  onOpenResult?: (resultId: number) => void;
+  onOpenResult?: (resultId: number, returnFocus: HTMLElement) => void;
 }
 
 function formatInterval(lower: number | null, upper: number | null): string {
@@ -311,7 +311,7 @@ function BoundaryDisclosure({
   isExpanded: boolean;
   onToggle: () => void;
   availableResults: Set<number>;
-  onOpenResult?: (resultId: number) => void;
+  onOpenResult?: (resultId: number, returnFocus: HTMLElement) => void;
 }) {
   const detailsId = `boundary-${reason.code}`;
   return (
@@ -370,16 +370,15 @@ function EvidenceReferenceLink({
 }: {
   reference: BoundaryEvidenceReference;
   availableResults: Set<number>;
-  onOpenResult?: (resultId: number) => void;
+  onOpenResult?: (resultId: number, returnFocus: HTMLElement) => void;
 }) {
   const resultId = reference.kind === "result" ? Number(reference.id) : Number.NaN;
   const canOpen = Number.isInteger(resultId) && availableResults.has(resultId) && onOpenResult;
   if (canOpen) {
     return (
       <button
-        id={`run-boundary-result-${resultId}`}
         type="button"
-        onClick={() => onOpenResult(resultId)}
+        onClick={(event) => onOpenResult(resultId, event.currentTarget)}
         className="rounded border border-slate-700 bg-slate-800 px-2 py-1 font-mono text-[10px] text-gold-300 hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-500"
       >
         Open result {reference.id}

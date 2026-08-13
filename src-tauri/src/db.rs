@@ -1,5 +1,7 @@
 use rusqlite::{Connection, Result as SqlResult};
-use std::path::{Path, PathBuf};
+#[cfg(debug_assertions)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 static DB: std::sync::OnceLock<Mutex<Connection>> = std::sync::OnceLock::new();
@@ -11,6 +13,17 @@ fn db_path() -> PathBuf {
 
 fn live_db_file() -> PathBuf {
     db_path().join("colosseum.db")
+}
+
+#[cfg(debug_assertions)]
+fn nearest_existing_ancestor(path: &Path) -> Option<&Path> {
+    let mut candidate = path;
+    loop {
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        candidate = candidate.parent()?;
+    }
 }
 
 #[cfg(debug_assertions)]
@@ -30,9 +43,9 @@ fn validate_acceptance_db_path(path: &Path, live_dir: &Path) -> SqlResult<PathBu
         }
     }
     if let (Some(parent), Ok(resolved_live_dir)) = (path.parent(), live_dir.canonicalize()) {
-        if parent
-            .canonicalize()
-            .is_ok_and(|resolved| resolved.starts_with(resolved_live_dir))
+        if nearest_existing_ancestor(parent)
+            .and_then(|ancestor| ancestor.canonicalize().ok())
+            .is_some_and(|resolved| resolved.starts_with(resolved_live_dir))
         {
             return Err(rusqlite::Error::InvalidPath(path.to_path_buf()));
         }
@@ -895,6 +908,11 @@ mod tests {
         symlink(&live_file, &linked_file).unwrap();
 
         assert!(validate_acceptance_db_path(&linked_file, &live_dir).is_err());
+
+        let linked_dir = acceptance_dir.join("linked-live");
+        symlink(&live_dir, &linked_dir).unwrap();
+        let missing_descendant = linked_dir.join("new/fixture.db");
+        assert!(validate_acceptance_db_path(&missing_descendant, &live_dir).is_err());
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

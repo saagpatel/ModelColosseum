@@ -52,8 +52,8 @@ def main() -> int:
     decision = example.get("decision", {})
     if decision.get("status") != "abstain":
         fail("worked example must abstain")
-    if decision.get("evidence_status") != "partial":
-        fail("incomplete fixture must remain partial")
+    if decision.get("evidence_status") != "invalid":
+        fail("zero-measurement incomplete fixture must remain invalid")
 
     source_run_key = example.get("derivation", {}).get("source_run_key")
     if not isinstance(source_run_key, str) or not source_run_key.startswith("synthetic-"):

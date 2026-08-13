@@ -747,7 +747,10 @@ export function Benchmark() {
   const [showBlindCompare, setShowBlindCompare] = useState(false);
   const [blindOnePerPrompt, setBlindOnePerPrompt] = useState(false);
   const [evidenceRevision, setEvidenceRevision] = useState(0);
-  const [focusedEvidenceResultId, setFocusedEvidenceResultId] = useState<number | null>(null);
+  const [focusedEvidenceResult, setFocusedEvidenceResult] = useState<{
+    resultId: number;
+    returnFocus: HTMLElement;
+  } | null>(null);
   const [boundaryExportError, setBoundaryExportError] = useState<string | null>(null);
   const importFileRef = useRef<HTMLInputElement>(null);
   const replayFileRef = useRef<HTMLInputElement>(null);
@@ -773,7 +776,7 @@ export function Benchmark() {
 
   useEffect(() => {
     setBoundaryExportError(null);
-    setFocusedEvidenceResultId(null);
+    setFocusedEvidenceResult(null);
   }, [viewingRunId]);
 
   // Auto-load results when benchmark completes
@@ -1258,9 +1261,9 @@ export function Benchmark() {
               runId={viewingRunId}
               refreshKey={`${evidenceRevision}:${results.map((result) => `${result.id}:${result.manual_score ?? "-"}:${result.auto_judge_score ?? "-"}`).join("|")}`}
               availableResultIds={results.map((result) => result.id)}
-              onOpenResult={(resultId) => {
-                setFocusedEvidenceResultId(null);
-                window.requestAnimationFrame(() => setFocusedEvidenceResultId(resultId));
+              onOpenResult={(resultId, returnFocus) => {
+                setFocusedEvidenceResult(null);
+                window.requestAnimationFrame(() => setFocusedEvidenceResult({ resultId, returnFocus }));
               }}
             />
           )}
@@ -1268,7 +1271,7 @@ export function Benchmark() {
             results={results}
             blindMode={blindMode}
             onScoreChange={(id, score) => void handleScoreChange(id, score)}
-            focusResultId={focusedEvidenceResultId}
+            focusResult={focusedEvidenceResult}
           />
         </div>
       </div>

@@ -2120,6 +2120,26 @@ fn recommendation_for_scored_pair(
     }
 }
 
+fn has_conflicting_directional_methods(
+    category: &str,
+    all_evidence: &[&CapabilityEvidence],
+) -> bool {
+    let mut by_method: HashMap<&str, Vec<&CapabilityEvidence>> = HashMap::new();
+    for entry in all_evidence {
+        by_method
+            .entry(entry.scoring_method.as_str())
+            .or_default()
+            .push(*entry);
+    }
+    let winners: std::collections::BTreeSet<_> = by_method
+        .into_values()
+        .filter_map(|entries| {
+            recommendation_for_scored_pair(category.to_string(), entries).recommended_model
+        })
+        .collect();
+    winners.len() > 1
+}
+
 #[tauri::command]
 pub async fn get_run_evidence(run_id: i64) -> Result<RunEvidence, String> {
     let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
@@ -2158,8 +2178,11 @@ pub async fn get_run_evidence(run_id: i64) -> Result<RunEvidence, String> {
     let boundary_trials: Vec<BoundaryTrialInput> = {
         let mut stmt = conn
             .prepare(
-                "SELECT trial_key, trial_kind, status, result_id, exclusion_reason
-                 FROM benchmark_trials WHERE run_id = ?1 ORDER BY execution_order",
+                "SELECT t.trial_key, t.trial_kind, t.status, t.model_id, p.category,
+                        t.result_id, t.exclusion_reason
+                 FROM benchmark_trials t
+                 JOIN prompts p ON p.id = t.prompt_id
+                 WHERE t.run_id = ?1 ORDER BY t.execution_order",
             )
             .map_err(|e| format!("boundary trial query error: {e}"))?;
         let values = stmt
@@ -2168,8 +2191,10 @@ pub async fn get_run_evidence(run_id: i64) -> Result<RunEvidence, String> {
                     trial_key: row.get(0)?,
                     trial_kind: row.get(1)?,
                     status: row.get(2)?,
-                    result_id: row.get(3)?,
-                    exclusion_reason: row.get(4)?,
+                    model_id: row.get(3)?,
+                    category: row.get(4)?,
+                    result_id: row.get(5)?,
+                    exclusion_reason: row.get(6)?,
                 })
             })
             .map_err(|e| format!("boundary trial query error: {e}"))?
@@ -2299,6 +2324,13 @@ pub async fn get_run_evidence(run_id: i64) -> Result<RunEvidence, String> {
                 recommended_model: None,
                 confidence: "withheld".into(),
                 reason: "Run is incomplete or incomparable; no recommendation is allowed".into(),
+            }
+        } else if has_conflicting_directional_methods(&category, &all_evidence) {
+            CapabilityRecommendation {
+                category,
+                recommended_model: None,
+                confidence: "judge-sensitive".into(),
+                reason: "Eligible scoring methods support different directional winners".into(),
             }
         } else if selected.len() >= 2 {
             recommendation_for_scored_pair(category, selected)
@@ -4150,6 +4182,27 @@ mod tests {
 
         assert_eq!(recommendation.recommended_model, None);
         assert_eq!(recommendation.confidence, "inconclusive");
+    }
+
+    #[test]
+    fn mixed_human_and_auto_judge_directions_are_conflicting() {
+        let evidence =
+            |model_id, model_name: &str, scoring_method: &str, values: &[f64]| CapabilityEvidence {
+                category: "coding".into(),
+                model_id,
+                model_name: model_name.into(),
+                scoring_method: scoring_method.into(),
+                confidence: evaluation::mean_confidence_95(values),
+                result_ids: vec![model_id],
+            };
+        let human_a = evidence(1, "Model A", "human_score", &[9.0, 9.0, 9.0]);
+        let human_b = evidence(2, "Model B", "human_score", &[4.0, 4.0, 4.0]);
+        let auto_a = evidence(1, "Model A", "auto_judge:local", &[4.0, 4.0, 4.0]);
+        let auto_b = evidence(2, "Model B", "auto_judge:local", &[9.0, 9.0, 9.0]);
+        assert!(has_conflicting_directional_methods(
+            "coding",
+            &[&human_a, &human_b, &auto_a, &auto_b],
+        ));
     }
 
     #[test]

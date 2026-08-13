@@ -190,6 +190,8 @@ pub struct BoundaryTrialInput {
     pub trial_key: String,
     pub trial_kind: String,
     pub status: String,
+    pub model_id: i64,
+    pub category: String,
     pub result_id: Option<i64>,
     pub exclusion_reason: Option<String>,
 }
@@ -302,6 +304,47 @@ fn result_references(inputs: &[&BoundaryCapabilityInput]) -> Vec<EvidenceReferen
             digest: None,
         })
         .collect()
+}
+
+fn completed_result_references(input: &RunBoundaryInput) -> Vec<EvidenceReference> {
+    let mut ids = BTreeSet::new();
+    for trial in &input.trials {
+        if trial.trial_kind == "measured" && trial.status == "completed" {
+            if let Some(result_id) = trial.result_id {
+                ids.insert(result_id);
+            }
+        }
+    }
+    ids.into_iter()
+        .map(|id| EvidenceReference {
+            kind: EvidenceReferenceKind::Result,
+            id: id.to_string(),
+            digest: None,
+        })
+        .collect()
+}
+
+fn has_rescorable_sample_distribution(input: &RunBoundaryInput) -> bool {
+    let mut counts: HashMap<&str, HashMap<i64, usize>> = HashMap::new();
+    for trial in &input.trials {
+        if trial.trial_kind == "measured"
+            && trial.status == "completed"
+            && trial.result_id.is_some()
+        {
+            *counts
+                .entry(trial.category.as_str())
+                .or_default()
+                .entry(trial.model_id)
+                .or_default() += 1;
+        }
+    }
+    counts.values().any(|by_model| {
+        by_model
+            .values()
+            .filter(|sample_count| **sample_count >= 3)
+            .count()
+            >= 2
+    })
 }
 
 fn comparison_references(input: &RunBoundaryInput) -> Vec<EvidenceReference> {
@@ -506,6 +549,44 @@ fn category_method_groups(
             .push(evidence);
     }
     groups
+}
+
+fn directional_model_for_method(values: &[&BoundaryCapabilityInput]) -> Option<i64> {
+    let mut ranked = values.to_vec();
+    ranked.sort_by(|a, b| {
+        b.confidence
+            .mean
+            .partial_cmp(&a.confidence.mean)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let (Some(top), Some(runner_up)) = (ranked.first(), ranked.get(1)) else {
+        return None;
+    };
+    if !top.confidence.sufficient_sample || !runner_up.confidence.sufficient_sample {
+        return None;
+    }
+    match (top.confidence.lower_95, runner_up.confidence.upper_95) {
+        (Some(top_low), Some(other_high)) if top_low > other_high => Some(top.model_id),
+        _ => None,
+    }
+}
+
+fn conflicting_method_categories(
+    groups: &HashMap<(String, String), Vec<&BoundaryCapabilityInput>>,
+) -> BTreeSet<String> {
+    let mut winners: HashMap<&str, BTreeSet<i64>> = HashMap::new();
+    for ((category, _), values) in groups {
+        if let Some(model_id) = directional_model_for_method(values) {
+            winners
+                .entry(category.as_str())
+                .or_default()
+                .insert(model_id);
+        }
+    }
+    winners
+        .into_iter()
+        .filter_map(|(category, model_ids)| (model_ids.len() > 1).then(|| category.to_string()))
+        .collect()
 }
 
 pub fn derive_run_boundary(input: &RunBoundaryInput) -> RunBoundary {
@@ -782,24 +863,38 @@ pub fn derive_run_boundary(input: &RunBoundaryInput) -> RunBoundary {
         ));
     }
 
-    let no_measured_evidence =
-        input.completed_measured_trials == 0 || input.capability_evidence.is_empty();
-    if no_measured_evidence {
+    if input.completed_measured_trials == 0 {
         boundaries.push(blocking_reason(
             "no_measured_evidence",
             "all capabilities".into(),
             TruthClass::Observation,
-            if input.completed_measured_trials == 0 {
-                "No completed measured result exists.".into()
-            } else {
-                "Completed outputs exist, but no eligible same-method score evidence exists.".into()
-            },
+            "No completed measured result exists.".into(),
             manifest_refs.clone(),
             BoundaryClearance {
                 code: "record_eligible_measured_scores".into(),
                 statement: "Record valid measured outputs and same-method scores for at least two candidates.".into(),
                 proof_required: "At least three valid same-method measured scores per leading candidate for one capability.".into(),
-                new_run_required: input.completed_measured_trials == 0,
+                new_run_required: true,
+            },
+        ));
+    } else if input.capability_evidence.is_empty() {
+        let completed_refs = completed_result_references(input);
+        let enough_existing_outputs = has_rescorable_sample_distribution(input);
+        boundaries.push(blocking_reason(
+            "no_scored_evidence",
+            "all capabilities".into(),
+            TruthClass::Observation,
+            "Completed measured outputs exist, but no eligible same-method score evidence exists.".into(),
+            if completed_refs.is_empty() {
+                manifest_refs.clone()
+            } else {
+                completed_refs
+            },
+            BoundaryClearance {
+                code: "record_eligible_measured_scores".into(),
+                statement: "Score the completed measured outputs for at least two candidates with one shared method.".into(),
+                proof_required: "At least three valid same-method measured scores per leading candidate for one capability.".into(),
+                new_run_required: !enough_existing_outputs,
             },
         ));
     }
@@ -848,10 +943,14 @@ pub fn derive_run_boundary(input: &RunBoundaryInput) -> RunBoundary {
     }
 
     let groups = category_method_groups(input);
+    let conflicting_categories = conflicting_method_categories(&groups);
     let directional_categories: BTreeSet<_> = input
         .recommendations
         .iter()
-        .filter(|recommendation| recommendation.recommended_model.is_some())
+        .filter(|recommendation| {
+            recommendation.recommended_model.is_some()
+                && !conflicting_categories.contains(&recommendation.category)
+        })
         .map(|recommendation| recommendation.category.clone())
         .collect();
     let directional_inputs: Vec<_> = input
@@ -909,7 +1008,8 @@ pub fn derive_run_boundary(input: &RunBoundaryInput) -> RunBoundary {
                         >= 2
             })
             .collect();
-        if distinct_models.len() < 2
+        if conflicting_categories.contains(&category)
+            || distinct_models.len() < 2
             || shared_groups.is_empty()
             || recommendation_confidence == Some("judge-sensitive")
         {
@@ -1170,6 +1270,7 @@ pub fn derive_run_boundary(input: &RunBoundaryInput) -> RunBoundary {
             "runtime_identity_unstable",
             "run_incomplete",
             "no_measured_evidence",
+            "no_scored_evidence",
             "constraint_failed",
         ]
         .contains(&boundary.code.as_str())
@@ -1182,14 +1283,15 @@ pub fn derive_run_boundary(input: &RunBoundaryInput) -> RunBoundary {
         .recommendations
         .iter()
         .filter_map(|recommendation| {
-            (!quality_blocked_scopes.contains(recommendation.category.as_str()))
-                .then(|| {
-                    recommendation
-                        .recommended_model
-                        .as_ref()
-                        .map(|model| format!("{}: {}", recommendation.category, model))
-                })
-                .flatten()
+            (!quality_blocked_scopes.contains(recommendation.category.as_str())
+                && !conflicting_categories.contains(&recommendation.category))
+            .then(|| {
+                recommendation
+                    .recommended_model
+                    .as_ref()
+                    .map(|model| format!("{}: {}", recommendation.category, model))
+            })
+            .flatten()
         })
         .collect();
     let directional = !global_blocker && !supported.is_empty();
@@ -1365,6 +1467,8 @@ mod tests {
                     trial_key: format!("trial-{index}"),
                     trial_kind: "measured".into(),
                     status: "completed".into(),
+                    model_id: if index < 3 { 1 } else { 2 },
+                    category: "coding".into(),
                     result_id: Some(index + 1),
                     exclusion_reason: None,
                 })
@@ -1461,13 +1565,56 @@ mod tests {
     }
 
     #[test]
-    fn completed_outputs_without_scores_abstain_for_no_measured_evidence() {
+    fn completed_outputs_without_scores_abstain_for_no_scored_evidence() {
         let mut input = complete_input();
         input.capability_evidence.clear();
         input.recommendations.clear();
         let boundary = derive_run_boundary(&input);
-        assert_eq!(blocking_codes(&boundary), vec!["no_measured_evidence"]);
+        assert_eq!(blocking_codes(&boundary), vec!["no_scored_evidence"]);
         assert!(!boundary.boundaries[0].clearance[0].new_run_required);
+        assert_eq!(
+            boundary.decision.evidence_status,
+            BoundaryEvidenceStatus::Partial
+        );
+    }
+
+    #[test]
+    fn unscored_outputs_below_sample_floor_require_a_new_run() {
+        let mut input = complete_input();
+        input.planned_measured_trials = 2;
+        input.completed_measured_trials = 2;
+        input.manifest.as_mut().unwrap().measured_trial_count = 2;
+        input.trials.truncate(2);
+        input.capability_evidence.clear();
+        input.recommendations.clear();
+        let manifest = input.manifest.as_ref().unwrap();
+        input.manifest_digest = Some(crate::evaluation::sha256_hex(
+            serde_json::to_string_pretty(manifest).unwrap().as_bytes(),
+        ));
+        let boundary = derive_run_boundary(&input);
+        let blocker = &boundary.boundaries[0];
+        assert_eq!(blocker.code, "no_scored_evidence");
+        assert!(blocker.clearance[0].new_run_required);
+        assert_eq!(blocker.evidence_refs.len(), 2);
+        assert!(blocker
+            .evidence_refs
+            .iter()
+            .all(|reference| reference.kind == EvidenceReferenceKind::Result));
+    }
+
+    #[test]
+    fn aggregate_count_cannot_hide_wrong_sample_distribution() {
+        let mut input = complete_input();
+        for (index, trial) in input.trials.iter_mut().enumerate() {
+            trial.model_id = if index % 2 == 0 { 1 } else { 2 };
+            trial.category = format!("capability-{}", index / 2);
+        }
+        input.capability_evidence.clear();
+        input.recommendations.clear();
+        let boundary = derive_run_boundary(&input);
+        let blocker = &boundary.boundaries[0];
+        assert_eq!(blocker.code, "no_scored_evidence");
+        assert!(blocker.clearance[0].new_run_required);
     }
 
     #[test]
@@ -1482,7 +1629,7 @@ mod tests {
         let boundary = derive_run_boundary(&input);
         assert_eq!(
             blocking_codes(&boundary),
-            vec!["run_incomplete", "no_measured_evidence", "model_failure"]
+            vec!["run_incomplete", "no_scored_evidence", "model_failure"]
         );
     }
 
@@ -1510,6 +1657,20 @@ mod tests {
         input.recommendations[0].recommended_model = None;
         input.recommendations[0].confidence = "judge-sensitive".into();
         let boundary = derive_run_boundary(&input);
+        assert_eq!(blocking_codes(&boundary), vec!["judge_method_mismatch"]);
+    }
+
+    #[test]
+    fn directional_recommendation_cannot_override_conflicting_methods() {
+        let mut input = complete_input();
+        input.capability_evidence = vec![
+            capability(1, "Model A", "human_score", &[9.0, 9.0, 9.0], 1),
+            capability(2, "Model B", "human_score", &[4.0, 4.0, 4.0], 4),
+            capability(1, "Model A", "auto_judge:local", &[4.0, 4.0, 4.0], 7),
+            capability(2, "Model B", "auto_judge:local", &[9.0, 9.0, 9.0], 10),
+        ];
+        let boundary = derive_run_boundary(&input);
+        assert_eq!(boundary.decision.status, BoundaryDecisionStatus::Abstain);
         assert_eq!(blocking_codes(&boundary), vec!["judge_method_mismatch"]);
     }
 

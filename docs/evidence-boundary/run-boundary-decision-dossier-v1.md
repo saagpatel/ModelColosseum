@@ -44,22 +44,18 @@ or unsupported transfer—or see what evidence would clear each state.
 
 ## Discriminating proof
 
-The worked fixture uses the frozen Deployment Fit V2 premeasurement record.
-Candidate feasibility and one longer-timeout mechanism look promising in
-isolation. A throughput-oriented report could still tempt a model choice.
+The committed worked example is an explicitly synthetic, schema-faithful
+incomplete run. It records stable fixture identities, two planned measured
+trials, zero completed measurements, one failed trial, and one trial that never
+started. It contains no external proof records or product evidence.
 
-Run Boundary returns `abstain` with `evidence_status: invalid` because:
-
-- candidate identity changed during two freeze attempts;
-- no freeze manifest existed;
-- zero measured V2 requests ran;
-- the holdout remained unopened.
-
-It preserves Gate A and Gate B as observations, excludes them from V2 quality
-selection, marks cache and transfer facts unknown, and requires runtime
-isolation plus a new preregistration before clearance. The fixture therefore
-exposes a decision boundary that an aggregate score cannot represent without
-allowing an unsupported deployment conclusion.
+Run Boundary returns `abstain` with `evidence_status: invalid` because the run
+is incomplete and contains no measured result. It preserves the recorded trial
+plan as an observation, excludes incomplete trials from model choice, leaves
+cache state unknown, and requires both a complete trial plan and eligible
+same-method scores before clearance. The fixture therefore proves the typed
+ordering and claim boundary without importing parked Deployment Fit evidence
+or inventing a model conclusion.
 
 ## Prior-art decision
 
@@ -83,7 +79,7 @@ existing evidence to a claim boundary and clearance contract.
 | A — Decision clarity | PASS | One user makes one per-capability model-choice decision after a run. |
 | B — Evidence leverage | PASS | Immutable manifests, trials, results, judges, comparisons, exports, and raw outputs already exist; no new service or database is required. |
 | C — Truthfulness | PASS | The contract separates observation, policy, inference, exclusion, unknown, abstention, and unsupported claims. |
-| D — Discriminating value | PASS | The fixture blocks a tempting V2 choice because identity and measured evidence are absent, while preserving useful non-quality observations. |
+| D — Discriminating value | PASS | The synthetic fixture blocks a model choice because its measured plan is incomplete and zero measured results exist, while preserving the recorded plan as an observation. |
 | E — Integration economy | PASS | A pure Rust derivation extends `RunEvidence` and the existing panel; no migration or dependency is required. |
 | F — Privacy and provenance | PASS | The boundary-only receipt is local metadata with IDs and digests; raw content is omitted, and full export remains explicitly separate. |
 | G — Non-LLM reliability | PASS | Fixed typed rules derive every outcome; no judge council or generative explanation participates. |

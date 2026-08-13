@@ -181,6 +181,7 @@
             "runtime_identity_unstable",
             "run_incomplete",
             "no_measured_evidence",
+            "no_scored_evidence",
             "model_failure",
             "judge_method_mismatch",
             "insufficient_samples",

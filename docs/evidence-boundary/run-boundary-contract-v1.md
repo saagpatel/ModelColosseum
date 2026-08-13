@@ -18,7 +18,7 @@ evaluation engine.
 | State | Meaning | Allowed claim |
 |---|---|---|
 | `directional_choice` | One capability has a same-method, sufficiently repeated, non-overlapping result under a valid manifest. | A directional choice for that capability and recorded environment only. |
-| `abstain` | Evidence is valid or partial but does not support a choice. | The named blocker and its clearance condition. |
+| `abstain` | Evidence is valid, partial, or invalid and does not support a choice. | The named blocker and its clearance condition. |
 
 `evidence_status` separately records `valid`, `partial`, or `invalid`. This
 prevents a failed or premeasurement attempt from masquerading as an ordinary
@@ -48,17 +48,19 @@ Blocking codes are evaluated in this order:
 3. `run_incomplete` — a planned measured trial is failed, timed out, cancelled,
    excluded, empty, or never started.
 4. `no_measured_evidence` — no eligible measured result exists.
-5. `model_failure` — a measured request completed without a usable model
+5. `no_scored_evidence` — measured outputs exist, but no eligible score
+   evidence exists yet.
+6. `model_failure` — a measured request completed without a usable model
    output, such as an explicitly excluded empty output. Runtime, persistence,
    cancellation, and timeout errors do not become model failures.
-6. `judge_method_mismatch` — candidates do not share one scoring method, or
+7. `judge_method_mismatch` — candidates do not share one scoring method, or
    eligible method-specific comparisons support conflicting directions.
-7. `insufficient_samples` — either leading candidate has fewer than three valid
+8. `insufficient_samples` — either leading candidate has fewer than three valid
    same-method samples.
-8. `quality_gate_failed` — an explicitly recorded deterministic quality floor
+9. `quality_gate_failed` — an explicitly recorded deterministic quality floor
    failed. This code is unavailable when no floor was preregistered.
-9. `uncertainty_overlap` — the existing descriptive intervals overlap.
-10. `constraint_failed` — a named, preregistered latency, memory, reliability,
+10. `uncertainty_overlap` — the existing descriptive intervals overlap.
+11. `constraint_failed` — a named, preregistered latency, memory, reliability,
    or other observed constraint failed.
 
 Advisory codes do not become ranking penalties:

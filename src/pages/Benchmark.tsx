@@ -747,6 +747,8 @@ export function Benchmark() {
   const [showBlindCompare, setShowBlindCompare] = useState(false);
   const [blindOnePerPrompt, setBlindOnePerPrompt] = useState(false);
   const [evidenceRevision, setEvidenceRevision] = useState(0);
+  const [focusedEvidenceResultId, setFocusedEvidenceResultId] = useState<number | null>(null);
+  const [boundaryExportError, setBoundaryExportError] = useState<string | null>(null);
   const importFileRef = useRef<HTMLInputElement>(null);
   const replayFileRef = useRef<HTMLInputElement>(null);
   const replayDialogRef = useRef<HTMLElement>(null);
@@ -768,6 +770,11 @@ export function Benchmark() {
   }, [replayReadiness, replayBusy]);
 
   useBenchmarkEvents(runId);
+
+  useEffect(() => {
+    setBoundaryExportError(null);
+    setFocusedEvidenceResultId(null);
+  }, [viewingRunId]);
 
   // Auto-load results when benchmark completes
   useEffect(() => {
@@ -1023,6 +1030,21 @@ export function Benchmark() {
     }
   };
 
+  const handleExportBoundary = async () => {
+    if (viewingRunId === null) return;
+    setBoundaryExportError(null);
+    try {
+      const path = await save({
+        defaultPath: `run-boundary-${viewingRunId}.json`,
+        filters: [{ name: "Metadata-only Run Boundary", extensions: ["json"] }],
+      });
+      if (!path) return;
+      await invoke("save_run_boundary", { runId: viewingRunId, path });
+    } catch (err) {
+      setBoundaryExportError(String(err));
+    }
+  };
+
   // Group prompts by category
   const byCategory: Record<string, Prompt[]> = {};
   for (const p of prompts) {
@@ -1142,7 +1164,7 @@ export function Benchmark() {
         )}
 
         {/* Header */}
-        <div className="flex shrink-0 items-center justify-between border-b border-slate-800 px-6 py-3">
+        <div className="flex shrink-0 flex-col gap-3 border-b border-slate-800 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6">
           <div className="flex items-center gap-3">
             <button
               onClick={reset}
@@ -1158,7 +1180,7 @@ export function Benchmark() {
               </span>
             )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => setShowRunHistory(true)}
               className="h-8 rounded-lg bg-slate-800 px-3 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
@@ -1206,7 +1228,14 @@ export function Benchmark() {
               onClick={() => void handleExportReport()}
               className="h-8 rounded-lg bg-slate-800 px-3 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
             >
-              Export Evidence
+              Export Full Evidence (includes content)
+            </button>
+            <button
+              onClick={() => void handleExportBoundary()}
+              className="h-8 rounded-lg border border-slate-700 bg-slate-800 px-3 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-500"
+              title="Metadata only: omits prompt and model output content; no redaction is claimed"
+            >
+              Export Boundary Metadata
             </button>
             <button
               onClick={enterScoreAllMode}
@@ -1217,17 +1246,29 @@ export function Benchmark() {
           </div>
         </div>
 
+        {boundaryExportError && (
+          <p role="alert" className="border-b border-red-900/60 bg-red-500/10 px-4 py-2 text-xs text-red-300 sm:px-6">
+            Boundary export failed: {boundaryExportError}
+          </p>
+        )}
+
         <div className="min-h-0 flex-1 overflow-auto">
           {viewingRunId !== null && (
             <RunEvidencePanel
               runId={viewingRunId}
               refreshKey={`${evidenceRevision}:${results.map((result) => `${result.id}:${result.manual_score ?? "-"}:${result.auto_judge_score ?? "-"}`).join("|")}`}
+              availableResultIds={results.map((result) => result.id)}
+              onOpenResult={(resultId) => {
+                setFocusedEvidenceResultId(null);
+                window.requestAnimationFrame(() => setFocusedEvidenceResultId(resultId));
+              }}
             />
           )}
           <ResultsGrid
             results={results}
             blindMode={blindMode}
             onScoreChange={(id, score) => void handleScoreChange(id, score)}
+            focusResultId={focusedEvidenceResultId}
           />
         </div>
       </div>

@@ -197,6 +197,7 @@ export interface CapabilityEvidence {
   model_name: string;
   scoring_method: string;
   confidence: ConfidenceSummary;
+  result_ids: number[];
 }
 
 export interface CapabilityRecommendation {
@@ -204,6 +205,107 @@ export interface CapabilityRecommendation {
   recommended_model: string | null;
   confidence: string;
   reason: string;
+}
+
+export type BoundaryEvidenceState = "observed" | "declared" | "unknown";
+export type BoundaryTruthClass = "observation" | "policy" | "inference" | "unknown";
+export type BoundaryDisposition = "blocking" | "advisory";
+export type BoundaryReferenceKind =
+  | "manifest"
+  | "trial"
+  | "result"
+  | "judge_attempt"
+  | "comparison"
+  | "proof_record";
+
+export interface BoundaryObservedField {
+  state: BoundaryEvidenceState;
+  value: unknown;
+  source_ref: string | null;
+}
+
+export interface BoundaryEvidenceReference {
+  kind: BoundaryReferenceKind;
+  id: string;
+  digest: string | null;
+}
+
+export interface BoundaryClearance {
+  code: string;
+  statement: string;
+  proof_required: string;
+  new_run_required: boolean;
+}
+
+export interface BoundaryReason {
+  code: string;
+  scope: string;
+  disposition: BoundaryDisposition;
+  truth_class: BoundaryTruthClass;
+  statement: string;
+  evidence_refs: BoundaryEvidenceReference[];
+  clearance: BoundaryClearance[];
+}
+
+export interface BoundaryStatement {
+  code: string;
+  truth_class: BoundaryTruthClass;
+  statement: string;
+  evidence_refs: BoundaryEvidenceReference[];
+}
+
+export interface BoundaryExclusion extends BoundaryStatement {
+  consequence: string;
+}
+
+export interface BoundaryUnknown extends BoundaryStatement {
+  blocks_claims: string[];
+}
+
+export interface RunBoundary {
+  schema_version: "RunBoundaryV1";
+  boundary_id: string;
+  generated_at: string;
+  derivation: {
+    kind: "deterministic";
+    generator: string;
+    source_run_key: string;
+    source_manifest_digest: BoundaryObservedField;
+    source_evidence_digest: BoundaryObservedField;
+  };
+  scope: {
+    host: { id: string; digest: string | null; attributes: Record<string, unknown> };
+    runtime: { id: string; digest: string | null; attributes: Record<string, unknown> };
+    candidates: Array<{
+      candidate_id: string;
+      model_tag: string;
+      artifact_digest: string;
+      format: BoundaryObservedField;
+      quantization: BoundaryObservedField;
+      effective_context: BoundaryObservedField;
+    }>;
+    workload: { id: string; digest: string | null; attributes: Record<string, unknown> };
+    execution_semantics: Record<string, BoundaryObservedField>;
+  };
+  decision: {
+    status: "directional_choice" | "abstain";
+    evidence_status: "valid" | "partial" | "invalid";
+    subject: string;
+    summary: string;
+    claim_ceiling: string;
+  };
+  observations: BoundaryStatement[];
+  exclusions: BoundaryExclusion[];
+  unknowns: BoundaryUnknown[];
+  boundaries: BoundaryReason[];
+  unsupported_claims: string[];
+  privacy: {
+    content_mode: "metadata_only";
+    local_only: true;
+    raw_prompts_included: false;
+    raw_outputs_included: false;
+    redaction: "not_performed_content_omitted";
+  };
 }
 
 export interface RunEvidence {
@@ -237,6 +339,7 @@ export interface RunEvidence {
   judge_provenance: string[];
   elo_eligible: boolean;
   elo_updated: boolean;
+  boundary: RunBoundary;
 }
 
 export interface RunComparability {

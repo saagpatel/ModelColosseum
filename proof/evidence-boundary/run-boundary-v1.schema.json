@@ -1,0 +1,209 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modelcolosseum.local/schemas/run-boundary-v1.schema.json",
+  "title": "RunBoundaryV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "boundary_id",
+    "generated_at",
+    "derivation",
+    "scope",
+    "decision",
+    "observations",
+    "exclusions",
+    "unknowns",
+    "boundaries",
+    "unsupported_claims",
+    "privacy"
+  ],
+  "properties": {
+    "schema_version": { "const": "RunBoundaryV1" },
+    "boundary_id": { "type": "string", "minLength": 1 },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "derivation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "generator", "source_run_key", "source_manifest_digest", "source_evidence_digest"],
+      "properties": {
+        "kind": { "const": "deterministic" },
+        "generator": { "type": "string", "minLength": 1 },
+        "source_run_key": { "type": "string", "minLength": 1 },
+        "source_manifest_digest": { "$ref": "#/$defs/observedField" },
+        "source_evidence_digest": { "$ref": "#/$defs/observedField" }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "runtime", "candidates", "workload", "execution_semantics"],
+      "properties": {
+        "host": { "$ref": "#/$defs/identity" },
+        "runtime": { "$ref": "#/$defs/identity" },
+        "candidates": { "type": "array", "items": { "$ref": "#/$defs/candidate" } },
+        "workload": { "$ref": "#/$defs/identity" },
+        "execution_semantics": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/observedField" }
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "evidence_status", "subject", "summary", "claim_ceiling"],
+      "properties": {
+        "status": { "enum": ["directional_choice", "abstain"] },
+        "evidence_status": { "enum": ["valid", "partial", "invalid"] },
+        "subject": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "claim_ceiling": { "type": "string", "minLength": 1 }
+      }
+    },
+    "observations": { "type": "array", "items": { "$ref": "#/$defs/statement" } },
+    "exclusions": { "type": "array", "items": { "$ref": "#/$defs/exclusion" } },
+    "unknowns": { "type": "array", "items": { "$ref": "#/$defs/unknown" } },
+    "boundaries": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/boundary" } },
+    "unsupported_claims": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["content_mode", "local_only", "raw_prompts_included", "raw_outputs_included", "redaction"],
+      "properties": {
+        "content_mode": { "const": "metadata_only" },
+        "local_only": { "const": true },
+        "raw_prompts_included": { "const": false },
+        "raw_outputs_included": { "const": false },
+        "redaction": { "const": "not_performed_content_omitted" }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "observedField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "value", "source_ref"],
+      "properties": {
+        "state": { "enum": ["observed", "declared", "unknown"] },
+        "value": {},
+        "source_ref": { "type": ["string", "null"] }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "digest", "attributes"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "digest": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+        "attributes": { "type": "object" }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_id", "model_tag", "artifact_digest", "format", "quantization", "effective_context"],
+      "properties": {
+        "candidate_id": { "type": "string", "minLength": 1 },
+        "model_tag": { "type": "string", "minLength": 1 },
+        "artifact_digest": { "$ref": "#/$defs/digest" },
+        "format": { "$ref": "#/$defs/observedField" },
+        "quantization": { "$ref": "#/$defs/observedField" },
+        "effective_context": { "$ref": "#/$defs/observedField" }
+      }
+    },
+    "evidenceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "digest"],
+      "properties": {
+        "kind": { "enum": ["manifest", "trial", "result", "judge_attempt", "comparison", "proof_record"] },
+        "id": { "type": "string", "minLength": 1 },
+        "digest": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] }
+      }
+    },
+    "statement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "truth_class", "statement", "evidence_refs"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "truth_class": { "enum": ["observation", "policy", "inference", "unknown"] },
+        "statement": { "type": "string", "minLength": 1 },
+        "evidence_refs": { "type": "array", "items": { "$ref": "#/$defs/evidenceRef" } }
+      }
+    },
+    "exclusion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "truth_class", "statement", "evidence_refs", "consequence"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "truth_class": { "enum": ["observation", "policy", "inference", "unknown"] },
+        "statement": { "type": "string", "minLength": 1 },
+        "evidence_refs": { "type": "array", "items": { "$ref": "#/$defs/evidenceRef" } },
+        "consequence": { "type": "string", "minLength": 1 }
+      }
+    },
+    "unknown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "truth_class", "statement", "evidence_refs", "blocks_claims"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "truth_class": { "enum": ["observation", "policy", "inference", "unknown"] },
+        "statement": { "type": "string", "minLength": 1 },
+        "evidence_refs": { "type": "array", "items": { "$ref": "#/$defs/evidenceRef" } },
+        "blocks_claims": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "clearance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "statement", "proof_required", "new_run_required"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "statement": { "type": "string", "minLength": 1 },
+        "proof_required": { "type": "string", "minLength": 1 },
+        "new_run_required": { "type": "boolean" }
+      }
+    },
+    "boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "scope", "disposition", "truth_class", "statement", "evidence_refs", "clearance"],
+      "properties": {
+        "code": {
+          "enum": [
+            "provenance_missing",
+            "runtime_identity_unstable",
+            "run_incomplete",
+            "no_measured_evidence",
+            "model_failure",
+            "judge_method_mismatch",
+            "insufficient_samples",
+            "quality_gate_failed",
+            "uncertainty_overlap",
+            "constraint_failed",
+            "judge_disagreement",
+            "position_bias_risk",
+            "cache_state_unknown",
+            "thermal_attribution_unknown",
+            "context_effective_value_unknown",
+            "transfer_unsupported",
+            "development_only_evidence",
+            "small_sample_warning"
+          ]
+        },
+        "scope": { "type": "string", "minLength": 1 },
+        "disposition": { "enum": ["blocking", "advisory"] },
+        "truth_class": { "enum": ["observation", "policy", "inference", "unknown"] },
+        "statement": { "type": "string", "minLength": 1 },
+        "evidence_refs": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidenceRef" } },
+        "clearance": { "type": "array", "items": { "$ref": "#/$defs/clearance" } }
+      }
+    }
+  }
+}

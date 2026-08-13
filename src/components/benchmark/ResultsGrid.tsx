@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { BenchmarkResult } from "../../types";
 import { StarRating } from "./StarRating";
 import { OutputModal } from "./OutputModal";
@@ -30,10 +30,23 @@ interface ResultsGridProps {
   results: BenchmarkResult[];
   blindMode: boolean;
   onScoreChange: (resultId: number, score: number) => void;
+  focusResultId?: number | null;
 }
 
-export function ResultsGrid({ results, blindMode, onScoreChange }: ResultsGridProps) {
+export function ResultsGrid({ results, blindMode, onScoreChange, focusResultId = null }: ResultsGridProps) {
   const [openResult, setOpenResult] = useState<BenchmarkResult | null>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const closeOutput = useCallback(() => setOpenResult(null), []);
+
+  useEffect(() => {
+    if (focusResultId === null) return;
+    const result = results.find((candidate) => candidate.id === focusResultId);
+    if (!result) return;
+    returnFocusRef.current =
+      document.getElementById(`run-boundary-result-${focusResultId}`) ??
+      (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    setOpenResult(result);
+  }, [focusResultId, results]);
 
   if (results.length === 0) {
     return (
@@ -133,7 +146,8 @@ export function ResultsGrid({ results, blindMode, onScoreChange }: ResultsGridPr
         <OutputModal
           result={openResult}
           blindLabel={blindLabel}
-          onClose={() => setOpenResult(null)}
+          returnFocus={returnFocusRef.current}
+          onClose={closeOutput}
           onScoreChange={(id, score) => {
             onScoreChange(id, score);
           }}
@@ -209,7 +223,11 @@ export function ResultsGrid({ results, blindMode, onScoreChange }: ResultsGridPr
                         >
                           {r ? (
                             <button
-                              onClick={() => setOpenResult(r)}
+                              id={`benchmark-result-${r.id}`}
+                              onClick={(event) => {
+                                returnFocusRef.current = event.currentTarget;
+                                setOpenResult(r);
+                              }}
                               className="w-full text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
                             >
                               {/* Output preview */}

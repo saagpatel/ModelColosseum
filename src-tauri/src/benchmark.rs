@@ -5,6 +5,10 @@ use crate::evaluation::{
     PromptSnapshot, RunManifest, SideOutcome, SuiteSnapshot, TrialKind,
 };
 use crate::ollama::{self, GenerateRequest, StreamChunk};
+use crate::run_boundary::{
+    self, BoundaryCapabilityInput, BoundaryRecommendationInput, BoundaryTrialInput, RunBoundary,
+    RunBoundaryInput,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -144,6 +148,7 @@ pub struct CapabilityEvidence {
     pub model_name: String,
     pub scoring_method: String,
     pub confidence: ConfidenceSummary,
+    pub result_ids: Vec<i64>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -175,6 +180,7 @@ pub struct RunEvidence {
     pub judge_provenance: Vec<String>,
     pub elo_eligible: bool,
     pub elo_updated: bool,
+    pub boundary: RunBoundary,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -2117,19 +2123,60 @@ fn recommendation_for_scored_pair(
 #[tauri::command]
 pub async fn get_run_evidence(run_id: i64) -> Result<RunEvidence, String> {
     let conn = db::get_db().lock().map_err(|e| format!("db lock: {e}"))?;
-    let (outcome_status, manifest_digest, comparable, comparability_notes): (
+    let (outcome_status, manifest_digest, comparable, comparability_notes, run_started_at): (
         String,
         Option<String>,
         i64,
         Option<String>,
+        String,
     ) = conn
         .query_row(
-            "SELECT outcome_status, manifest_digest, comparable, comparability_notes
+            "SELECT outcome_status, manifest_digest, comparable, comparability_notes, started_at
              FROM benchmark_runs WHERE id = ?1",
             [run_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )
         .map_err(|e| format!("run not found (id={run_id}): {e}"))?;
+
+    let manifest: Option<RunManifest> = conn
+        .query_row(
+            "SELECT manifest_json FROM evaluation_run_manifests WHERE run_id = ?1",
+            [run_id],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|value| serde_json::from_str(&value).ok());
+
+    let boundary_trials: Vec<BoundaryTrialInput> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT trial_key, trial_kind, status, result_id, exclusion_reason
+                 FROM benchmark_trials WHERE run_id = ?1 ORDER BY execution_order",
+            )
+            .map_err(|e| format!("boundary trial query error: {e}"))?;
+        let values = stmt
+            .query_map([run_id], |row| {
+                Ok(BoundaryTrialInput {
+                    trial_key: row.get(0)?,
+                    trial_kind: row.get(1)?,
+                    status: row.get(2)?,
+                    result_id: row.get(3)?,
+                    exclusion_reason: row.get(4)?,
+                })
+            })
+            .map_err(|e| format!("boundary trial query error: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("boundary trial row error: {e}"))?;
+        values
+    };
 
     let counts: (i64, i64, i64, i64, i64, i64) = conn
         .query_row(
@@ -2155,7 +2202,9 @@ pub async fn get_run_evidence(run_id: i64) -> Result<RunEvidence, String> {
         )
         .map_err(|e| format!("trial count error: {e}"))?;
 
-    type ScoreRow = (String, i64, String, String, f64);
+    type ScoreRow = (String, i64, String, String, f64, i64);
+    type ScoreGroupKey = (String, i64, String, String);
+    type ScoreGroup = (Vec<f64>, Vec<i64>);
     let mut score_stmt = conn
         .prepare(
             "SELECT p.category, br.model_id, m.display_name,
@@ -2164,7 +2213,8 @@ pub async fn get_run_evidence(run_id: i64) -> Result<RunEvidence, String> {
                         ELSE 'human_score'
                     END,
                     CASE bs.scoring_method WHEN 'manual' THEN CAST(bs.score AS REAL) * 2.0
-                        ELSE CAST(bs.score AS REAL) END
+                        ELSE CAST(bs.score AS REAL) END,
+                    br.id
              FROM benchmark_results br
              JOIN benchmark_trials bt ON bt.id = br.trial_id
              JOIN prompts p ON p.id = br.prompt_id
@@ -2183,28 +2233,35 @@ pub async fn get_run_evidence(run_id: i64) -> Result<RunEvidence, String> {
                 row.get(2)?,
                 row.get(3)?,
                 row.get(4)?,
+                row.get(5)?,
             ))
         })
         .map_err(|e| format!("evidence query error: {e}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("evidence row error: {e}"))?;
 
-    let mut grouped: HashMap<(String, i64, String, String), Vec<f64>> = HashMap::new();
-    for (category, model_id, model_name, scoring_method, score) in score_rows {
-        grouped
+    let mut grouped: HashMap<ScoreGroupKey, ScoreGroup> = HashMap::new();
+    for (category, model_id, model_name, scoring_method, score, result_id) in score_rows {
+        let entry = grouped
             .entry((category, model_id, model_name, scoring_method))
-            .or_default()
-            .push(score);
+            .or_default();
+        entry.0.push(score);
+        entry.1.push(result_id);
     }
     let mut capability_evidence: Vec<CapabilityEvidence> = grouped
         .into_iter()
         .map(
-            |((category, model_id, model_name, scoring_method), values)| CapabilityEvidence {
-                category,
-                model_id,
-                model_name,
-                scoring_method,
-                confidence: evaluation::mean_confidence_95(&values),
+            |((category, model_id, model_name, scoring_method), (values, mut result_ids))| {
+                result_ids.sort_unstable();
+                result_ids.dedup();
+                CapabilityEvidence {
+                    category,
+                    model_id,
+                    model_name,
+                    scoring_method,
+                    confidence: evaluation::mean_confidence_95(&values),
+                    result_ids,
+                }
             },
         )
         .collect();
@@ -2437,6 +2494,59 @@ pub async fn get_run_evidence(run_id: i64) -> Result<RunEvidence, String> {
         sample_size: human_outcomes.len(),
     });
 
+    let comparison_ids: Vec<i64> = {
+        let mut stmt = conn
+            .prepare("SELECT id FROM benchmark_comparisons WHERE run_id = ?1 ORDER BY id")
+            .map_err(|e| format!("boundary comparison query error: {e}"))?;
+        let values = stmt
+            .query_map([run_id], |row| row.get(0))
+            .map_err(|e| format!("boundary comparison query error: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("boundary comparison row error: {e}"))?;
+        values
+    };
+
+    let boundary_input = RunBoundaryInput {
+        run_id,
+        run_started_at,
+        outcome_status: outcome_status.clone(),
+        manifest_digest: manifest_digest.clone(),
+        manifest,
+        comparable: comparable != 0,
+        comparability_notes: comparability_notes.clone(),
+        planned_measured_trials: counts.0,
+        completed_measured_trials: counts.1,
+        trials: boundary_trials,
+        capability_evidence: capability_evidence
+            .iter()
+            .map(|entry| BoundaryCapabilityInput {
+                category: entry.category.clone(),
+                model_id: entry.model_id,
+                model_name: entry.model_name.clone(),
+                scoring_method: entry.scoring_method.clone(),
+                confidence: entry.confidence.clone(),
+                result_ids: entry.result_ids.clone(),
+            })
+            .collect(),
+        recommendations: recommendations
+            .iter()
+            .map(|entry| BoundaryRecommendationInput {
+                category: entry.category.clone(),
+                recommended_model: entry.recommended_model.clone(),
+                confidence: entry.confidence.clone(),
+            })
+            .collect(),
+        judge_disagreement_rate: judge_disagreement.disagreement_rate,
+        judge_disagreement_sufficient: judge_disagreement.sufficient_sample,
+        position_bias_detected: position_bias.detected,
+        position_bias_warning: position_bias.warning.clone(),
+        comparison_ids,
+        runtime_identity_stable: None,
+        explicit_boundaries: Vec::new(),
+        development_only: false,
+    };
+    let boundary = run_boundary::derive_run_boundary(&boundary_input);
+
     Ok(RunEvidence {
         run_id,
         outcome_status,
@@ -2457,7 +2567,26 @@ pub async fn get_run_evidence(run_id: i64) -> Result<RunEvidence, String> {
         judge_provenance,
         elo_eligible,
         elo_updated: false,
+        boundary,
     })
+}
+
+#[tauri::command]
+pub async fn export_run_boundary(run_id: i64) -> Result<String, String> {
+    let evidence = get_run_evidence(run_id).await?;
+    serde_json::to_string_pretty(&evidence.boundary)
+        .map_err(|e| format!("run boundary serialize error: {e}"))
+}
+
+#[tauri::command]
+pub async fn save_run_boundary(run_id: i64, path: String) -> Result<(), String> {
+    let destination = std::path::PathBuf::from(path);
+    if destination.extension().and_then(|value| value.to_str()) != Some("json") {
+        return Err("Run Boundary receipts must be saved as a .json file".into());
+    }
+    let contents = export_run_boundary(run_id).await?;
+    std::fs::write(&destination, contents)
+        .map_err(|e| format!("failed to save Run Boundary receipt: {e}"))
 }
 
 #[tauri::command]
@@ -3979,6 +4108,7 @@ mod tests {
             model_name: "Coder".into(),
             scoring_method: "auto_judge:mistral:7b".into(),
             confidence: evaluation::mean_confidence_95(&[10.0, 10.0, 10.0, 10.0, 10.0]),
+            result_ids: vec![1, 2, 3, 4, 5],
         };
         let weak = CapabilityEvidence {
             category: "coding".into(),
@@ -3986,6 +4116,7 @@ mod tests {
             model_name: "General".into(),
             scoring_method: "auto_judge:mistral:7b".into(),
             confidence: evaluation::mean_confidence_95(&[5.0, 5.0, 5.0, 5.0, 5.0]),
+            result_ids: vec![6, 7, 8, 9, 10],
         };
 
         let recommendation = recommendation_for_scored_pair("coding".into(), vec![&weak, &strong]);
@@ -4003,6 +4134,7 @@ mod tests {
             model_name: "First".into(),
             scoring_method: "auto_judge:mistral:7b".into(),
             confidence: evaluation::mean_confidence_95(&[8.0, 9.0, 8.0, 9.0, 8.0]),
+            result_ids: vec![1, 2, 3, 4, 5],
         };
         let second = CapabilityEvidence {
             category: "analysis".into(),
@@ -4010,6 +4142,7 @@ mod tests {
             model_name: "Second".into(),
             scoring_method: "auto_judge:mistral:7b".into(),
             confidence: evaluation::mean_confidence_95(&[8.0, 8.0, 9.0, 8.0, 9.0]),
+            result_ids: vec![6, 7, 8, 9, 10],
         };
 
         let recommendation =
@@ -4220,7 +4353,14 @@ mod tests {
         serde_json::to_string(&serde_json::json!({
             "version": version,
             "manifest": manifest,
-            "evidence": { "manifest_digest": digest, "comparable": true }
+            "evidence": {
+                "manifest_digest": digest,
+                "comparable": true,
+                "boundary": {
+                    "schema_version": "RunBoundaryV1",
+                    "decision": { "status": "abstain" }
+                }
+            }
         }))
         .unwrap()
     }
@@ -4231,6 +4371,10 @@ mod tests {
         let json = replay_bundle_json(&manifest, 2);
         let (parsed, digest) = parse_replay_bundle(&json).unwrap();
         assert_eq!(parsed.manifest.run_key, manifest.run_key);
+        assert_eq!(
+            parsed.evidence["boundary"]["schema_version"],
+            "RunBoundaryV1"
+        );
         assert_eq!(digest.len(), 64);
     }
 

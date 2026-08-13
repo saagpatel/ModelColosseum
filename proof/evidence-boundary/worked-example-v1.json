@@ -1,0 +1,167 @@
+{
+  "schema_version": "RunBoundaryV1",
+  "boundary_id": "synthetic-incomplete-run-boundary",
+  "generated_at": "2026-08-13T10:00:00Z",
+  "derivation": {
+    "kind": "deterministic",
+    "generator": "model-colosseum/run-boundary-fixture-v1",
+    "source_run_key": "synthetic-run-boundary-contract-fixture",
+    "source_manifest_digest": {
+      "state": "observed",
+      "value": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "source_ref": "run:fixture:manifest"
+    },
+    "source_evidence_digest": {
+      "state": "observed",
+      "value": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "source_ref": "run:fixture:evidence"
+    }
+  },
+  "scope": {
+    "host": {
+      "id": "synthetic-host",
+      "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "attributes": {
+        "fixture": true,
+        "architecture": "arm64"
+      }
+    },
+    "runtime": {
+      "id": "synthetic-loopback-runtime",
+      "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "attributes": {
+        "fixture": true,
+        "endpoint_class": "loopback"
+      }
+    },
+    "candidates": [
+      {
+        "candidate_id": "fixture-model-a",
+        "model_tag": "fixture/model-a",
+        "artifact_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "format": {"state": "observed", "value": "gguf", "source_ref": "run:fixture:manifest"},
+        "quantization": {"state": "observed", "value": "fixture-q4", "source_ref": "run:fixture:manifest"},
+        "effective_context": {"state": "unknown", "value": null, "source_ref": "run:fixture:manifest"}
+      },
+      {
+        "candidate_id": "fixture-model-b",
+        "model_tag": "fixture/model-b",
+        "artifact_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "format": {"state": "observed", "value": "gguf", "source_ref": "run:fixture:manifest"},
+        "quantization": {"state": "observed", "value": "fixture-q4", "source_ref": "run:fixture:manifest"},
+        "effective_context": {"state": "unknown", "value": null, "source_ref": "run:fixture:manifest"}
+      }
+    ],
+    "workload": {
+      "id": "synthetic-workload",
+      "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "attributes": {
+        "fixture": true,
+        "planned_measured_trials": 2
+      }
+    },
+    "execution_semantics": {
+      "context": {"state": "unknown", "value": null, "source_ref": "run:fixture:manifest"},
+      "cache": {"state": "unknown", "value": null, "source_ref": "run:fixture:manifest"},
+      "concurrency": {"state": "declared", "value": 1, "source_ref": "run:fixture:manifest"},
+      "timeout_seconds": {"state": "declared", "value": 60, "source_ref": "run:fixture:manifest"},
+      "warm_state": {"state": "declared", "value": "unspecified", "source_ref": "run:fixture:manifest"},
+      "retries": {"state": "declared", "value": 0, "source_ref": "run:fixture:manifest"},
+      "measured_requests": {"state": "observed", "value": 0, "source_ref": "run:fixture:evidence"}
+    }
+  },
+  "decision": {
+    "status": "abstain",
+    "evidence_status": "partial",
+    "subject": "fixture capability choice",
+    "summary": "Abstain: the planned measured run is incomplete and contains no eligible measured evidence.",
+    "claim_ceiling": "The fixture demonstrates deterministic abstention and clearance ordering only; it is not product or model evidence."
+  },
+  "observations": [
+    {
+      "code": "fixture_plan_recorded",
+      "truth_class": "observation",
+      "statement": "The synthetic manifest records two planned measured trials.",
+      "evidence_refs": [
+        {"kind": "manifest", "id": "run:fixture:manifest", "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+      ]
+    }
+  ],
+  "exclusions": [
+    {
+      "code": "incomplete_trials_excluded",
+      "truth_class": "policy",
+      "statement": "Failed and not-started fixture trials are excluded from any model choice.",
+      "evidence_refs": [
+        {"kind": "trial", "id": "fixture-trial-failed", "digest": null},
+        {"kind": "trial", "id": "fixture-trial-not-started", "digest": null}
+      ],
+      "consequence": "No eligible quality comparison exists."
+    }
+  ],
+  "unknowns": [
+    {
+      "code": "fixture_cache_unknown",
+      "truth_class": "unknown",
+      "statement": "The synthetic fixture records no cache-state observation.",
+      "evidence_refs": [
+        {"kind": "manifest", "id": "run:fixture:manifest", "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+      ],
+      "blocks_claims": ["cache effects"]
+    }
+  ],
+  "boundaries": [
+    {
+      "code": "run_incomplete",
+      "scope": "entire synthetic run",
+      "disposition": "blocking",
+      "truth_class": "observation",
+      "statement": "Zero of two planned measured fixture trials completed.",
+      "evidence_refs": [
+        {"kind": "trial", "id": "fixture-trial-failed", "digest": null},
+        {"kind": "trial", "id": "fixture-trial-not-started", "digest": null}
+      ],
+      "clearance": [
+        {
+          "code": "complete_valid_trial_plan",
+          "statement": "Complete every planned measured trial under the same immutable manifest.",
+          "proof_required": "Two completed measured trial receipts with usable outputs and stable manifest identity.",
+          "new_run_required": true
+        }
+      ]
+    },
+    {
+      "code": "no_measured_evidence",
+      "scope": "fixture capability choice",
+      "disposition": "blocking",
+      "truth_class": "observation",
+      "statement": "No eligible measured result exists in the fixture.",
+      "evidence_refs": [
+        {"kind": "manifest", "id": "run:fixture:manifest", "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+      ],
+      "clearance": [
+        {
+          "code": "record_eligible_measurement",
+          "statement": "Record eligible measured results for both candidates.",
+          "proof_required": "Same-method measured result evidence for both candidates under the recorded workload.",
+          "new_run_required": true
+        }
+      ]
+    }
+  ],
+  "unsupported_claims": [
+    "model quality",
+    "deployment candidate selection",
+    "production reliability",
+    "cross-host transfer",
+    "energy use",
+    "user demand"
+  ],
+  "privacy": {
+    "content_mode": "metadata_only",
+    "local_only": true,
+    "raw_prompts_included": false,
+    "raw_outputs_included": false,
+    "redaction": "not_performed_content_omitted"
+  }
+}

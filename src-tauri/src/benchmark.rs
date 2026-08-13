@@ -10,7 +10,7 @@ use crate::run_boundary::{
     RunBoundaryInput,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::System;
@@ -149,6 +149,71 @@ pub struct CapabilityEvidence {
     pub scoring_method: String,
     pub confidence: ConfidenceSummary,
     pub result_ids: Vec<i64>,
+}
+
+type ScoreRow = (i64, i64, String, String, f64, i64, i64);
+type ScoreGroupKey = (String, i64, String, String);
+
+fn manifest_prompt_category(manifest: Option<&RunManifest>, prompt_id: i64) -> String {
+    manifest
+        .and_then(|value| {
+            value
+                .suite
+                .prompts
+                .iter()
+                .find(|prompt| prompt.id == prompt_id)
+        })
+        .map(|prompt| prompt.category.clone())
+        .unwrap_or_else(|| "unknown".into())
+}
+
+fn capability_evidence_from_score_rows(
+    manifest: Option<&RunManifest>,
+    score_rows: Vec<ScoreRow>,
+) -> Vec<CapabilityEvidence> {
+    let mut grouped: HashMap<ScoreGroupKey, BTreeMap<i64, (i64, f64)>> = HashMap::new();
+    for (prompt_id, model_id, model_name, scoring_method, score, result_id, score_id) in score_rows
+    {
+        let category = manifest_prompt_category(manifest, prompt_id);
+        let samples = grouped
+            .entry((category, model_id, model_name, scoring_method))
+            .or_default();
+        match samples.get_mut(&result_id) {
+            Some((current_score_id, current_score)) if score_id > *current_score_id => {
+                *current_score_id = score_id;
+                *current_score = score;
+            }
+            None => {
+                samples.insert(result_id, (score_id, score));
+            }
+            _ => {}
+        }
+    }
+
+    let mut evidence: Vec<_> = grouped
+        .into_iter()
+        .map(
+            |((category, model_id, model_name, scoring_method), samples)| {
+                let result_ids: Vec<_> = samples.keys().copied().collect();
+                let values: Vec<_> = samples.values().map(|(_, score)| *score).collect();
+                CapabilityEvidence {
+                    category,
+                    model_id,
+                    model_name,
+                    scoring_method,
+                    confidence: evaluation::mean_confidence_95(&values),
+                    result_ids,
+                }
+            },
+        )
+        .collect();
+    evidence.sort_by(|a, b| {
+        a.category
+            .cmp(&b.category)
+            .then(a.scoring_method.cmp(&b.scoring_method))
+            .then(a.model_id.cmp(&b.model_id))
+    });
+    evidence
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -2121,7 +2186,7 @@ fn recommendation_for_scored_pair(
 }
 
 fn has_conflicting_directional_methods(
-    category: &str,
+    _category: &str,
     all_evidence: &[&CapabilityEvidence],
 ) -> bool {
     let mut by_method: HashMap<&str, Vec<&CapabilityEvidence>> = HashMap::new();
@@ -2133,11 +2198,31 @@ fn has_conflicting_directional_methods(
     }
     let winners: std::collections::BTreeSet<_> = by_method
         .into_values()
-        .filter_map(|entries| {
-            recommendation_for_scored_pair(category.to_string(), entries).recommended_model
-        })
+        .filter_map(directional_winner_model_id)
         .collect();
     winners.len() > 1
+}
+
+fn directional_winner_model_id(mut selected: Vec<&CapabilityEvidence>) -> Option<i64> {
+    selected.sort_by(|a, b| {
+        b.confidence
+            .mean
+            .partial_cmp(&a.confidence.mean)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    if selected.len() < 2
+        || !selected[0].confidence.sufficient_sample
+        || !selected[1].confidence.sufficient_sample
+    {
+        return None;
+    }
+    match (
+        selected[0].confidence.lower_95,
+        selected[1].confidence.upper_95,
+    ) {
+        (Some(top_low), Some(other_high)) if top_low > other_high => Some(selected[0].model_id),
+        _ => None,
+    }
 }
 
 #[tauri::command]
@@ -2178,10 +2263,9 @@ pub async fn get_run_evidence(run_id: i64) -> Result<RunEvidence, String> {
     let boundary_trials: Vec<BoundaryTrialInput> = {
         let mut stmt = conn
             .prepare(
-                "SELECT t.trial_key, t.trial_kind, t.status, t.model_id, p.category,
+                "SELECT t.trial_key, t.trial_kind, t.status, t.model_id, t.prompt_id,
                         t.result_id, t.exclusion_reason
                  FROM benchmark_trials t
-                 JOIN prompts p ON p.id = t.prompt_id
                  WHERE t.run_id = ?1 ORDER BY t.execution_order",
             )
             .map_err(|e| format!("boundary trial query error: {e}"))?;
@@ -2192,7 +2276,7 @@ pub async fn get_run_evidence(run_id: i64) -> Result<RunEvidence, String> {
                     trial_kind: row.get(1)?,
                     status: row.get(2)?,
                     model_id: row.get(3)?,
-                    category: row.get(4)?,
+                    category: manifest_prompt_category(manifest.as_ref(), row.get(4)?),
                     result_id: row.get(5)?,
                     exclusion_reason: row.get(6)?,
                 })
@@ -2227,22 +2311,18 @@ pub async fn get_run_evidence(run_id: i64) -> Result<RunEvidence, String> {
         )
         .map_err(|e| format!("trial count error: {e}"))?;
 
-    type ScoreRow = (String, i64, String, String, f64, i64);
-    type ScoreGroupKey = (String, i64, String, String);
-    type ScoreGroup = (Vec<f64>, Vec<i64>);
     let mut score_stmt = conn
         .prepare(
-            "SELECT p.category, br.model_id, m.display_name,
+            "SELECT br.prompt_id, br.model_id, m.display_name,
                     CASE bs.scoring_method
                         WHEN 'auto_judge' THEN 'auto_judge:' || jm.name
                         ELSE 'human_score'
                     END,
                     CASE bs.scoring_method WHEN 'manual' THEN CAST(bs.score AS REAL) * 2.0
                         ELSE CAST(bs.score AS REAL) END,
-                    br.id
+                    br.id, bs.id
              FROM benchmark_results br
              JOIN benchmark_trials bt ON bt.id = br.trial_id
-             JOIN prompts p ON p.id = br.prompt_id
              JOIN models m ON m.id = br.model_id
              JOIN benchmark_scores bs ON bs.result_id = br.id AND bs.status = 'completed'
                  AND bs.scoring_method IN ('auto_judge', 'manual')
@@ -2259,43 +2339,14 @@ pub async fn get_run_evidence(run_id: i64) -> Result<RunEvidence, String> {
                 row.get(3)?,
                 row.get(4)?,
                 row.get(5)?,
+                row.get(6)?,
             ))
         })
         .map_err(|e| format!("evidence query error: {e}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("evidence row error: {e}"))?;
 
-    let mut grouped: HashMap<ScoreGroupKey, ScoreGroup> = HashMap::new();
-    for (category, model_id, model_name, scoring_method, score, result_id) in score_rows {
-        let entry = grouped
-            .entry((category, model_id, model_name, scoring_method))
-            .or_default();
-        entry.0.push(score);
-        entry.1.push(result_id);
-    }
-    let mut capability_evidence: Vec<CapabilityEvidence> = grouped
-        .into_iter()
-        .map(
-            |((category, model_id, model_name, scoring_method), (values, mut result_ids))| {
-                result_ids.sort_unstable();
-                result_ids.dedup();
-                CapabilityEvidence {
-                    category,
-                    model_id,
-                    model_name,
-                    scoring_method,
-                    confidence: evaluation::mean_confidence_95(&values),
-                    result_ids,
-                }
-            },
-        )
-        .collect();
-    capability_evidence.sort_by(|a, b| {
-        a.category
-            .cmp(&b.category)
-            .then(a.scoring_method.cmp(&b.scoring_method))
-            .then(a.model_name.cmp(&b.model_name))
-    });
+    let capability_evidence = capability_evidence_from_score_rows(manifest.as_ref(), score_rows);
 
     let mut recommendation_groups: HashMap<String, Vec<&CapabilityEvidence>> = HashMap::new();
     for evidence in &capability_evidence {
@@ -4203,6 +4254,57 @@ mod tests {
             "coding",
             &[&human_a, &human_b, &auto_a, &auto_b],
         ));
+    }
+
+    #[test]
+    fn conflicting_directional_methods_compare_model_identity_not_display_name() {
+        let evidence = |model_id, scoring_method: &str, values: &[f64]| CapabilityEvidence {
+            category: "coding".into(),
+            model_id,
+            model_name: "Shared display name".into(),
+            scoring_method: scoring_method.into(),
+            confidence: evaluation::mean_confidence_95(values),
+            result_ids: vec![model_id],
+        };
+        let human_a = evidence(1, "human_score", &[9.0, 9.0, 9.0]);
+        let human_b = evidence(2, "human_score", &[4.0, 4.0, 4.0]);
+        let auto_a = evidence(1, "auto_judge:local", &[4.0, 4.0, 4.0]);
+        let auto_b = evidence(2, "auto_judge:local", &[9.0, 9.0, 9.0]);
+
+        assert!(has_conflicting_directional_methods(
+            "coding",
+            &[&human_a, &human_b, &auto_a, &auto_b],
+        ));
+    }
+
+    #[test]
+    fn score_revisions_count_once_per_result_and_latest_wins() {
+        let mut manifest = comparison_manifest();
+        manifest.suite.prompts.push(PromptSnapshot {
+            id: 7,
+            category: "immutable-category".into(),
+            title: "Prompt".into(),
+            text: "Text".into(),
+            system_prompt: None,
+            ideal_answer: None,
+            eval_criteria: None,
+            sort_order: 0,
+            digest: "prompt-digest".into(),
+        });
+        let evidence = capability_evidence_from_score_rows(
+            Some(&manifest),
+            vec![
+                (7, 1, "Model".into(), "human_score".into(), 2.0, 10, 1),
+                (7, 1, "Model".into(), "human_score".into(), 6.0, 10, 2),
+                (7, 1, "Model".into(), "human_score".into(), 10.0, 10, 3),
+            ],
+        );
+
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].category, "immutable-category");
+        assert_eq!(evidence[0].result_ids, vec![10]);
+        assert_eq!(evidence[0].confidence.sample_size, 1);
+        assert_eq!(evidence[0].confidence.mean, Some(10.0));
     }
 
     #[test]

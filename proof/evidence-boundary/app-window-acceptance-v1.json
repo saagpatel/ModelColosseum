@@ -1,0 +1,244 @@
+{
+  "schema": "RunBoundaryAppWindowAcceptanceV1",
+  "observed_at": "2026-08-13T15:13:16Z",
+  "source_commit": "af1fdc1c98ab3c85646a885155f61584be3ebff9",
+  "branch": "feat/run-boundary-v1",
+  "decision": "ACCEPTANCE_COMPLETE",
+  "claim_ceiling": "Run Boundary V1 passes app-window acceptance against a deterministic disposable database. This proves the real local UI, export, accessibility, compatibility, and failure-boundary workflow for synthetic schema-faithful cases. It is not model-quality, deployment-fit, transfer, demand, production, energy, or live-workload evidence.",
+  "deployment_fit_state": "PARKED",
+  "acceptance_fixture": {
+    "schema": "RunBoundaryAcceptanceFixtureVerificationV1",
+    "label": "[ACCEPTANCE FIXTURE — NOT PRODUCT EVIDENCE] Run Boundary V1",
+    "database_location": "A disposable database outside /Users/d/.model-colosseum/; removed after verification.",
+    "database_sha256": "af52e9b77ee8ea916eb65c0c83307ab08c699171133abefd61854ba45681c082",
+    "counts": {
+      "benchmark_runs": 4,
+      "evaluation_run_manifests": 3,
+      "benchmark_results": 8,
+      "benchmark_trials": 12
+    },
+    "run_ids": {
+      "directional": 1,
+      "incomplete_abstention": 2,
+      "legacy_missing_provenance": 3,
+      "safe_load_error": 4
+    },
+    "product_inference_used": false,
+    "construction": "The committed fixture script seeded fixed IDs, timestamps, manifests, trial states, human scores, and explicitly synthetic outputs into an app-initialized empty disposable database. It then verified exact counts and labels.",
+    "startup_note": "The first empty-database app launch read local Ollama startup metadata and populated disposable model rows; no inference ran. The fixture script removed those rows and set the disposable runtime URL to an unreachable localhost port before accepted cases were viewed."
+  },
+  "representative_runs": {
+    "directional": {
+      "run_id": 1,
+      "status": "PASS",
+      "evidence": "DIRECTIONAL CHOICE appeared before its scoped coding summary and claim ceiling. [FIXTURE] Model A led Model B on three same-method human scores each; all six stable result references opened their matching synthetic outputs."
+    },
+    "abstaining_incomplete_or_incomparable": {
+      "run_id": 2,
+      "status": "PASS",
+      "evidence": "ABSTAIN appeared first for completed_with_failures. Ordered run-incomplete, no-scored-evidence, model-failure, and constraint-failed blockers each disclosed evidence and What would clear this instructions. Failed, timeout, cancelled, and excluded trial references remained visible as unavailable."
+    },
+    "legacy_or_provenance_incomplete": {
+      "run_id": 3,
+      "status": "PASS",
+      "evidence": "A missing immutable manifest forced abstention, preserved the legacy/unavailable provenance label, and left its clearly synthetic legacy output readable."
+    },
+    "safe_derivation_or_load_error": {
+      "run_id": 4,
+      "status": "PASS",
+      "evidence": "A schema-valid missing judge identity produced an accessible Run Boundary unavailable message, made no decision claim, and left the associated synthetic output visible."
+    }
+  },
+  "live_database": {
+    "path": "/Users/d/.model-colosseum/colosseum.db",
+    "before_counts": {
+      "benchmark_runs": 0,
+      "evaluation_run_manifests": 0,
+      "benchmark_results": 0,
+      "benchmark_scores": 0
+    },
+    "after_counts": {
+      "benchmark_runs": 0,
+      "evaluation_run_manifests": 0,
+      "benchmark_results": 0,
+      "benchmark_scores": 0
+    },
+    "before_sha256": {
+      "database": "b49061c3e7448357b8849c299ccc4072c626bd378a251da19f6235a402e72086",
+      "wal": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shm": "4d12f584bdb74f6d16443c29208da741648b4d95a1bb822ac2ffffce892bbede"
+    },
+    "after_sha256": {
+      "database": "b49061c3e7448357b8849c299ccc4072c626bd378a251da19f6235a402e72086",
+      "wal": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shm": "4d12f584bdb74f6d16443c29208da741648b4d95a1bb822ac2ffffce892bbede"
+    },
+    "integrity_note": "After an earlier direct SQLite verification read checkpointed logically unchanged WAL state, the final acceptance was restarted from a fresh baseline. Counts were read from disposable database copies; the live database, WAL, and SHM digests and copied bytes were identical before and after that final run."
+  },
+  "launch_evidence": {
+    "debug_override": "MODEL_COLOSSEUM_ACCEPTANCE_DB_PATH is compiled only in debug builds, requires an absolute .db path, and rejects lexical, canonical-parent, and symlink-resolved paths inside the live data directory.",
+    "release_behavior": "The acceptance environment branch is absent outside debug_assertions; release selection remains the live database path.",
+    "bundle_executable": "model-colosseum",
+    "source_executable_sha256": "43f4b2900b1159383d4c6e0f4e8da643938c23a09bf8666fa14a3826f798cbc3",
+    "bundle_executable_sha256": "43f4b2900b1159383d4c6e0f4e8da643938c23a09bf8666fa14a3826f798cbc3",
+    "bundle_identity_result": "PASS"
+  },
+  "app_window_evidence": [
+    {
+      "state": "benchmark_editor",
+      "result": "PASS",
+      "evidence": "The real Tauri window showed Offline and the clearly labeled acceptance suite; no benchmark control was activated."
+    },
+    {
+      "state": "directional_normal_and_minimum_width",
+      "result": "PASS",
+      "evidence": "At normal width and the supported approximately 900-pixel minimum, decision, summary, claim ceiling, scoped recommendation, evidence references, and the horizontally usable evidence/results tables remained readable without clipped controls."
+    },
+    {
+      "state": "abstention_normal_and_minimum_width",
+      "result": "PASS",
+      "evidence": "At both widths, ABSTAIN remained first and all four ordered blockers remained readable and operable."
+    },
+    {
+      "state": "legacy_and_load_error",
+      "result": "PASS",
+      "evidence": "The legacy provenance boundary and the no-claim load-error state rendered in the real app while preserving available raw synthetic output."
+    }
+  ],
+  "accessibility_results": [
+    {
+      "check": "decision_and_error_semantics",
+      "result": "PASS",
+      "evidence": "Decision status precedes summary and claim ceiling in reading order and uses role=status. Boundary export and load failures are exposed with role=alert and plain-language text; meaning is not color-only."
+    },
+    {
+      "check": "native_disclosure_and_reading_order",
+      "result": "PASS",
+      "evidence": "Native buttons exposed collapsed/expanded state, responded to Return, retained focus, and inserted disclosure content immediately after the controlling button."
+    },
+    {
+      "check": "unknown_excluded_advisory_distinction",
+      "result": "PASS",
+      "evidence": "The expanded disclosure presented separate UNKNOWN OR NOT OBSERVED, EXCLUDED FROM THE CHOICE, and ADVISORIES headings with distinct content."
+    },
+    {
+      "check": "result_reference_modal",
+      "result": "PASS",
+      "evidence": "Open result 1 opened the matching labeled dialog, initial focus landed on Close, Shift+Tab and Tab wrapped within the dialog, Escape closed it, and focus returned to the exact Open result 1 button."
+    }
+  ],
+  "export_and_privacy": {
+    "boundary_receipt": {
+      "result": "PASS",
+      "sha256": "d15d871e9a7d742da3ad5deb84d7b1cd3bea236582068899d96ae46eb2578256",
+      "schema_version": "RunBoundaryV1",
+      "boundary_id": "run-boundary:1:c6b150079e29",
+      "generated_at": "2026-08-13T01:00:00Z",
+      "privacy": "metadata_only; prompts and outputs omitted; no redaction claimed",
+      "scan": "No synthetic prompt/output body, home path, credential, account identifier, or free-form log string was present; identifiers, timestamps, and sha256-prefixed digests passed structural checks."
+    },
+    "full_evidence_bundle": {
+      "result": "PASS",
+      "sha256": "033fe3fa94d83106f0a33fb3d14a22d8768b92526d72d37b9547e57ddac6619a",
+      "version": 2,
+      "content": "The suite prompt and six output bodies were present and explicitly labeled SYNTHETIC ACCEPTANCE FIXTURE / No model was called. The nested RunBoundaryV1 receipt remained additive."
+    },
+    "adjacency_and_labeling": "PASS: Export Full Evidence (includes content) and Export Boundary Metadata were adjacent and visibly distinct.",
+    "success": "PASS for both export types into the disposable directory.",
+    "cancellation": "PASS: cancelling the native full-evidence save sheet returned to results without an error or file.",
+    "safe_failure": "PASS: making only the selected disposable destination non-writable after selection produced an accessible Permission denied boundary-export error; permissions were restored before cleanup.",
+    "cleanup": "Both exported files and their disposable database directory were removed from their working paths to Trash after digests and validation results were recorded; this cleanup remains recoverable."
+  },
+  "consumer_and_replay": {
+    "bundle_version_2": "PASS",
+    "additive_boundary_parse": "PASS: the v2 consumer parsed evidence.boundary without changing legacy top-level requirements.",
+    "tamper_rejection": "PASS: replay_bundle_integrity_rejects_tampered_manifest.",
+    "unsupported_version_rejection": "PASS: replay_bundle_rejects_unsupported_export_version.",
+    "legacy_without_boundary": "PASS by current consumer contract: boundary remains optional inside serde_json::Value evidence while manifest_digest and comparable remain required.",
+    "inspection_and_preparation": "PASS at source and deterministic consumer-test scope: parse/integrity/readiness gates precede the preparation transaction, and preparation records replay provenance. Live preparation was intentionally not invoked because it would query local Ollama and mutate even the disposable suite/model catalog.",
+    "rollback": "No stored boundary column or migration exists; removing the additive boundary source requires no stored-data recovery."
+  },
+  "regression_results": {
+    "database_path_tests": "PASS: 2/2, including symlink resolution into live data.",
+    "run_boundary_tests": "PASS: 18/18.",
+    "replay_tests": "PASS: 3/3 focused integrity/version tests.",
+    "full_rust_tests": "PASS: 113/113.",
+    "rust_format": "PASS.",
+    "rust_clippy": "PASS with -D warnings.",
+    "typescript_and_production_build": "PASS: 698 modules transformed; the existing large-chunk warning remains.",
+    "fixture_verifier": "PASS: 4 runs, 3 manifests, 8 results, 12 trials; product_inference_used=false.",
+    "json_parse_and_export_checks": "PASS.",
+    "git_diff_check": "PASS."
+  },
+  "acceptance_gates": {
+    "A_live_state_integrity": "PASS",
+    "B_decision_truthfulness": "PASS",
+    "C_evidence_drill_down": "PASS",
+    "D_export_privacy": "PASS",
+    "E_consumer_compatibility": "PASS",
+    "F_accessibility": "PASS",
+    "G_responsive_usability": "PASS",
+    "H_regression_safety": "PASS",
+    "I_scope_discipline": "PASS"
+  },
+  "repairs": [
+    {
+      "defect": "The source branch carried an experimental second binary and a stale default-run workaround.",
+      "repair": "Excluded the Deployment Fit binary and default-run change; cargo metadata and bundle readback confirm one model-colosseum binary."
+    },
+    {
+      "defect": "No isolated app-window evidence path existed.",
+      "repair": "Added a debug-only fail-closed acceptance database override plus a deterministic schema-faithful fixture script; no dependency, migration, route, service, or release behavior was added."
+    },
+    {
+      "defect": "Decision status followed the summary in reading order.",
+      "repair": "Moved semantic status before summary and claim ceiling."
+    },
+    {
+      "defect": "A supported directional decision had no drill-down result references.",
+      "repair": "Added exact same-method result references to the directional capability observation and a focused six-reference test."
+    },
+    {
+      "defect": "Closing a result opened from Run Boundary did not restore focus to its initiating reference.",
+      "repair": "Passed the exact stable Run Boundary reference element to the existing modal cleanup focus restoration."
+    },
+    {
+      "defect": "Mixed human and auto-judge evidence could hide a conflicting direction, and aggregate output counts could overstate rescoring readiness.",
+      "repair": "Conflicting methods now block direction. Rescoring clearance requires three result-backed completed measured trials for each of at least two candidates in one exact capability."
+    },
+    {
+      "defect": "Completed outputs without eligible scores were mislabeled as having no measured evidence.",
+      "repair": "Added the distinct no_scored_evidence boundary with completed result references and honest new-run requirements."
+    }
+  ],
+  "remaining_unknowns": [
+    "Human comprehension and usefulness were not studied; this is operator-observed acceptance, not user research.",
+    "No real model, judge, workload, thermal, energy, deployment, transfer, demand, production, or long-duration claim was tested.",
+    "Live Ollama replay readiness and preparation were not invoked; only additive parsing, integrity gates, preparation ordering, and rollback shape were verified.",
+    "Widths below the product's supported 900-pixel minimum remain out of scope; the minimum was not changed."
+  ],
+  "package_manager_effects": {
+    "offline_frozen_hydration": "pnpm install --offline --frozen-lockfile reused 128 cached packages and downloaded 0.",
+    "repository_dependency_files_changed": false,
+    "package_json_sha256": "89cfec788844448a9120682ed6c2e323a5c8b1869e810b197b7823644c94b073",
+    "pnpm_lock_sha256": "0047c0e7859e4d8023d213f6e83578f1dfa2e8dddec7124bc50e46d8c021cdd7",
+    "disposable_products_removed_to_trash": [
+      "node_modules",
+      "dist",
+      "acceptance SQLite database and WAL/SHM",
+      "full and metadata-only exports",
+      "safe-failure destination"
+    ],
+    "ownership_uncertain_products_preserved": [
+      "src-tauri/target"
+    ],
+    "warning": "pnpm reported that package.json pnpm.onlyBuiltDependencies is no longer read; the production build also retained its existing large-chunk warning."
+  },
+  "actions_not_taken": [
+    "No ModelColosseum product inference, benchmark, auto-judge, judge council, holdout access, rescoring, or live evidence mutation; the mandatory Codex smoke evaluator remained separate from product evidence.",
+    "No model, runtime, or dependency download, install, or upgrade.",
+    "No database migration, route, service, telemetry, runtime abstraction, minimum-width change, or Deployment Fit work.",
+    "No live replay preparation, external service write, account action, scheduler action, outreach, or purchase.",
+    "No modification to the original checkout and no remote mutation, push, pull request, merge, deployment, or publication."
+  ]
+}

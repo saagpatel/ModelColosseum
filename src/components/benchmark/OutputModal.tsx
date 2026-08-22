@@ -32,20 +32,43 @@ function fmt(n: number): string {
 interface OutputModalProps {
   result: BenchmarkResult;
   blindLabel: string | null;
+  returnFocus: HTMLElement | null;
   onClose: () => void;
   onScoreChange: (resultId: number, score: number) => void;
 }
 
-export function OutputModal({ result, blindLabel, onClose, onScoreChange }: OutputModalProps) {
+export function OutputModal({ result, blindLabel, returnFocus, onClose, onScoreChange }: OutputModalProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const titleId = `output-modal-title-${result.id}`;
 
   useEffect(() => {
+    closeButtonRef.current?.focus();
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
+      if (e.key === "Tab" && overlayRef.current) {
+        const focusable = Array.from(
+          overlayRef.current.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+          ),
+        );
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first && last) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last && first) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
     };
     document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [onClose]);
+    return () => {
+      document.removeEventListener("keydown", handler);
+      returnFocus?.focus();
+    };
+  }, [onClose, returnFocus]);
 
   const modelLabel = blindLabel ?? result.model_name;
   const tps = result.tokens_per_second !== null ? result.tokens_per_second.toFixed(1) : "—";
@@ -55,6 +78,9 @@ export function OutputModal({ result, blindLabel, onClose, onScoreChange }: Outp
   return (
     <div
       ref={overlayRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={titleId}
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm"
       onClick={(e) => {
         if (e.target === overlayRef.current) onClose();
@@ -65,7 +91,7 @@ export function OutputModal({ result, blindLabel, onClose, onScoreChange }: Outp
         <div className="flex shrink-0 items-start justify-between border-b border-slate-700 px-6 py-4">
           <div className="min-w-0 flex-1">
             <div className="mb-1 flex items-center gap-2">
-              <span className="text-base font-bold text-slate-100">{modelLabel}</span>
+              <span id={titleId} className="text-base font-bold text-slate-100">{modelLabel}</span>
               <span
                 className={`rounded px-1.5 py-0.5 text-xs font-medium ${badgeClass(result.prompt_category)}`}
               >
@@ -75,6 +101,9 @@ export function OutputModal({ result, blindLabel, onClose, onScoreChange }: Outp
             <p className="text-sm text-slate-400">{result.prompt_title}</p>
           </div>
           <button
+            ref={closeButtonRef}
+            type="button"
+            aria-label="Close result output"
             onClick={onClose}
             className="ml-4 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gold-500"
           >

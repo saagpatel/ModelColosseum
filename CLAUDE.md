@@ -72,7 +72,7 @@ cargo fmt             # format on save
 
 ## What This Project Is
 
-ModelColosseum is an active local project in the /Users/d/Projects portfolio.
+ModelColosseum is an active local project in the ~/Projects portfolio.
 
 ## Current State
 

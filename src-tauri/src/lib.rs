@@ -5,6 +5,7 @@ mod elo;
 mod evaluation;
 mod ollama;
 mod prompts;
+mod run_boundary;
 
 use serde::Serialize;
 use std::collections::HashMap;
@@ -697,6 +698,8 @@ pub fn run() {
             benchmark::auto_judge_benchmark,
             benchmark::cancel_auto_judge,
             benchmark::get_run_evidence,
+            benchmark::export_run_boundary,
+            benchmark::save_run_boundary,
             benchmark::get_run_comparability,
             benchmark::export_reproduction_receipt,
             benchmark::get_benchmark_leaderboard,

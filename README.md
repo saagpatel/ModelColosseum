@@ -24,7 +24,7 @@ Model Colosseum is a local-first macOS evaluation lab with a playful arena ident
 
 ### Prerequisites
 - Rust stable and the native Tauri build dependencies for your platform
-- Node.js satisfying `^20.19.0 || >=22.12.0` and pnpm
+- Node.js 22.22.0 or newer and pnpm (the locked React Router requirement)
 - For interactive evaluation: [Ollama](https://ollama.com) running locally with completion-capable models already installed (at least two for Arena)
 
 See [development and verification](docs/verification.md) for platform setup,

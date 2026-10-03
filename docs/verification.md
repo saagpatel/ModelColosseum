@@ -5,8 +5,9 @@ Run commands from the repository root. The Rust manifest is
 
 ## Prerequisites
 
-- Node.js satisfying `^20.19.0 || >=22.12.0`, as required by the locked Vite 8
-  package, and pnpm with support for the committed `pnpm-lock.yaml`.
+- Node.js 22.22.0 or newer, as required by the locked React Router 8.4 package
+  (a stricter minimum than Vite), and pnpm with support for the committed
+  `pnpm-lock.yaml`.
 - Rust stable with the `rustfmt` and `clippy` components. Native Tauri dependencies
   are required even for Rust tests: macOS desktop development needs Xcode Command
   Line Tools; see [Tauri's platform prerequisites](https://v2.tauri.app/start/prerequisites/).

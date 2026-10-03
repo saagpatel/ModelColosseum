@@ -5,13 +5,20 @@ Local-first Tauri 2.x desktop app for evaluating Ollama models: Arena (model vs 
 ## Stack
 
 - Runtime: Tauri 2.x (Rust backend + webview frontend)
-- Frontend: React 19 + TypeScript 5.x strict mode
-- Build: Vite 6.x with `@tauri-apps/vite-plugin`
+- Frontend: React 19 + TypeScript 7.x strict mode
+- Build: Vite 8.x with `@vitejs/plugin-react` 6.x and `@tailwindcss/vite` 4.x
 - Styling: Tailwind CSS 4.x (dark theme, gold/amber accents)
-- State: Zustand 5.x; Routing: React Router 7.x; Charts: Recharts 2.x
-- Database: SQLite via `rusqlite` 0.31+ (bundled, WAL mode)
-- HTTP: `reqwest` 0.12+; Async: `tokio` 1.x; System info: `sysinfo` 0.31+
+- State: Zustand 5.x; Routing: React Router 8.x; Charts: Recharts 3.x
+- Database: SQLite via `rusqlite` 0.31.x (bundled, WAL mode)
+- HTTP: `reqwest` 0.12.x; Async: `tokio` 1.x; System info: `sysinfo` 0.31.x
 - LLM: Ollama REST API (`localhost:11434`)
+
+Versions above describe the direct dependency lines in `package.json` and
+`src-tauri/Cargo.toml`; exact resolutions are in `pnpm-lock.yaml` and
+`src-tauri/Cargo.lock`. Use pnpm for frontend and Tauri CLI commands. The repo
+does not pin a pnpm version; use one compatible with lockfile version 9 and the
+build permissions in `pnpm-workspace.yaml`. Node.js must be at least 22.22.0
+for the locked React Router package.
 
 ## Architecture
 
@@ -32,12 +39,18 @@ Use [development and verification](docs/verification.md) for the canonical gate,
 focused fixtures, typecheck, Rust formatting/Clippy commands, platform
 prerequisites, and interactive app checks. Cargo commands run from the repository
 root must select `src-tauri/Cargo.toml`; build/test checks do not require Ollama.
+The canonical commands are `pnpm install --frozen-lockfile`, `pnpm run build`,
+and `cargo test --manifest-path src-tauri/Cargo.toml --locked`.
+Use `pnpm tauri dev` for interactive development and `pnpm tauri build` for a
+release app bundle. The package script `pnpm test` runs Rust tests; there is no
+frontend test or lint script. Makefile targets are Rust-only, so `make build`
+is a release Rust build, not a frontend build or Tauri bundle.
 
 ## Conventions
 
 - TypeScript strict mode; type with `unknown` + narrowing, never `any`
 - React functional components with hooks only; no class components
-- Rust: `clippy` clean, `cargo fmt` on save; use `?` or proper error handling — no `unwrap()` in production code
+- Rust: `clippy` clean, `cargo fmt --manifest-path src-tauri/Cargo.toml --all` on save; use `?` or proper error handling — no `unwrap()` in production code
 - File naming: `snake_case.rs`, `PascalCase.tsx`, `camelCase.ts`
 - Tauri commands return `Result<T, String>` — handle errors in Rust, surface to frontend
 - Database writes in explicit transactions
@@ -84,23 +97,23 @@ ModelColosseum is an active local project in the ~/Projects portfolio.
 ## Stack
 
 - Runtime: Tauri 2.x (Rust backend + webview frontend)
-- Frontend: React 19 + TypeScript 5.x strict mode
-- Build: Vite 6.x with `@tauri-apps/vite-plugin`
+- Frontend: React 19 + TypeScript 7.x strict mode
+- Build: Vite 8.x with `@vitejs/plugin-react` 6.x and `@tailwindcss/vite` 4.x
 - Styling: Tailwind CSS 4.x (dark theme, gold/amber accents)
 - State: Zustand 5.x
-- Routing: React Router 7.x
-- Charts: Recharts 2.x
-- Database: SQLite via `rusqlite` 0.31+ (bundled, WAL mode)
-- HTTP: `reqwest` 0.12+ (async streaming)
+- Routing: React Router 8.x
+- Charts: Recharts 3.x
+- Database: SQLite via `rusqlite` 0.31.x (bundled, WAL mode)
+- HTTP: `reqwest` 0.12.x (async streaming)
 - Async: `tokio` 1.x
-- System info: `sysinfo` 0.31+
+- System info: `sysinfo` 0.31.x
 - LLM: Ollama REST API (localhost:11434)
 
 ## How To Run
 
 - TypeScript strict mode. No `any` types.
 - React: Functional components with hooks only. No class components.
-- Rust: `clippy` clean. `cargo fmt` on save.
+- Rust: `clippy` clean. `cargo fmt --manifest-path src-tauri/Cargo.toml --all` on save.
 - File naming: `snake_case.rs` for Rust, `PascalCase.tsx` for React components, `camelCase.ts` for utilities
 - Git commits: conventional commits (`feat:`, `fix:`, `refactor:`, `chore:`)
 - All Tauri commands return `Result<T, String>` — handle errors in Rust, display in frontend

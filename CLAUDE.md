@@ -28,14 +28,10 @@ Key modules:
 
 ## Build / Test / Run
 
-```bash
-pnpm install          # install deps
-pnpm tauri dev        # dev server (hot reload)
-pnpm tauri build      # production build
-pnpm test             # runs: cd src-tauri && cargo test
-cargo clippy -- -D warnings  # lint (must pass clean)
-cargo fmt             # format on save
-```
+Use [development and verification](docs/verification.md) for the canonical gate,
+focused fixtures, typecheck, Rust formatting/Clippy commands, platform
+prerequisites, and interactive app checks. Cargo commands run from the repository
+root must select `src-tauri/Cargo.toml`; build/test checks do not require Ollama.
 
 ## Conventions
 

@@ -1,4 +1,4 @@
 # codex-os-managed
-pnpm install
+pnpm install --frozen-lockfile
 pnpm run build
-cargo test --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml --locked

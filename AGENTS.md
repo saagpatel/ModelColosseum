@@ -35,6 +35,8 @@ ModelColosseum is a local-first Tauri 2 desktop app for evaluating Ollama models
 ## Verification
 
 Use `.codex/verify.commands` as the canonical local gate.
+See `docs/verification.md` for prerequisites, focused fixture checks, broader
+static checks, and the boundary between offline verification and app launch.
 
 ## Done Criteria
 

@@ -23,23 +23,24 @@ Model Colosseum is a local-first macOS evaluation lab with a playful arena ident
 ## Quick Start
 
 ### Prerequisites
-- Rust stable toolchain
-- Node.js 20+ and pnpm
-- [Ollama](https://ollama.com) running locally with at least two completion-capable models already installed
+- Rust stable and the native Tauri build dependencies for your platform
+- Node.js satisfying `^20.19.0 || >=22.12.0` and pnpm
+- For interactive evaluation: [Ollama](https://ollama.com) running locally with completion-capable models already installed (at least two for Arena)
+
+See [development and verification](docs/verification.md) for platform setup,
+focused fixtures, full tests, formatting, linting, and safe app-window checks.
+Build and fixture checks do not require Ollama.
 
 ### Installation
 ```bash
 git clone https://github.com/saagpatel/ModelColosseum
 cd ModelColosseum
-pnpm install
+pnpm install --frozen-lockfile
 ```
 
 ### Usage
 ```bash
-# Start Ollama (if not already running)
-ollama serve
-
-# Run the app in development
+# Interactive development; opens the app database and may query local Ollama
 pnpm tauri dev
 
 # Build release app

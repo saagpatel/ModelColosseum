@@ -24,7 +24,8 @@ Model Colosseum is a local-first macOS evaluation lab with a playful arena ident
 
 ### Prerequisites
 - Rust stable and the native Tauri build dependencies for your platform
-- Node.js 22.22.0 or newer and pnpm (the locked React Router requirement)
+- Node.js 22.22.0 or newer (the locked React Router requirement)
+- pnpm compatible with lockfile version 9 and `pnpm-workspace.yaml` build permissions; no pnpm version is pinned
 - For interactive evaluation: [Ollama](https://ollama.com) running locally with completion-capable models already installed (at least two for Arena)
 
 See [development and verification](docs/verification.md) for platform setup,
@@ -52,12 +53,16 @@ pnpm tauri build
 | Layer | Technology |
 |-------|------------|
 | Desktop shell | Tauri 2 |
-| Backend | Rust 2021 |
-| Database | SQLite (rusqlite, WAL mode) |
-| Frontend | React 19 + TypeScript + Tailwind CSS 4 + Recharts |
+| Backend | Rust (2021 edition) |
+| Database | SQLite (rusqlite 0.31, bundled, WAL mode) |
+| Frontend | React 19 + TypeScript 7 (strict) + Tailwind CSS 4 + Recharts 3 |
+| Build | Vite 8 + `@vitejs/plugin-react` 6 + `@tailwindcss/vite` 4 |
 | State | Zustand 5 |
 | LLM runtime | Ollama (local) via streaming REST API |
-| Routing | React Router 7 |
+| Routing | React Router 8 |
+
+Dependency lines come from `package.json` and `src-tauri/Cargo.toml`; exact
+versions are recorded in `pnpm-lock.yaml` and `src-tauri/Cargo.lock`.
 
 ## License
 
